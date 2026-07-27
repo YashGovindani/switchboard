@@ -2,16 +2,16 @@ import Foundation
 import CryptoKit
 
 /// Cached translation of one action's prompt into shell commands.
-struct CachedAction: Codable {
-    var promptHash: String
-    var commands: [String]
-    var generatedAt: Date
+public struct CachedAction: Codable {
+    public var promptHash: String
+    public var commands: [String]
+    public var generatedAt: Date
 }
 
 /// Cache keyed by "<environment>/<action>". A cached entry is valid only
 /// while the prompt's hash matches, so editing a prompt regenerates it.
-enum CommandCache {
-    static let url = ConfigStore.dir.appendingPathComponent("cache.json")
+public enum CommandCache {
+    public static let url = ConfigStore.dir.appendingPathComponent("cache.json")
 
     static func hash(of prompt: String) -> String {
         SHA256.hash(data: Data(prompt.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -33,14 +33,14 @@ enum CommandCache {
 
     static func key(env: String, action: String) -> String { "\(env)/\(action)" }
 
-    static func lookup(env: String, action: ActionSpec) -> CachedAction? {
+    public static func lookup(env: String, action: ActionSpec) -> CachedAction? {
         guard let entry = load()[key(env: env, action: action.name)],
               entry.promptHash == hash(of: action.prompt)
         else { return nil }
         return entry
     }
 
-    static func store(env: String, action: ActionSpec, commands: [String]) throws {
+    public static func store(env: String, action: ActionSpec, commands: [String]) throws {
         var cache = load()
         cache[key(env: env, action: action.name)] = CachedAction(
             promptHash: hash(of: action.prompt),

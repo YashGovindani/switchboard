@@ -1,10 +1,11 @@
 import Foundation
 
-enum Runner {
+public enum Runner {
     /// Runs each command with `zsh -lc`, stopping on the first failure.
-    static func run(_ commands: [String], label: String) -> Bool {
+    public static func run(_ commands: [String], label: String, log: ((String) -> Void)? = nil) -> Bool {
+        let log = log ?? { print($0) }
         for command in commands {
-            print("  [\(label)] $ \(command)")
+            log("  [\(label)] $ \(command)")
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = ["-lc", command]
@@ -12,11 +13,11 @@ enum Runner {
                 try process.run()
                 process.waitUntilExit()
             } catch {
-                print("  [\(label)] failed to launch: \(error)")
+                log("  [\(label)] failed to launch: \(error)")
                 return false
             }
             if process.terminationStatus != 0 {
-                print("  [\(label)] exited with code \(process.terminationStatus)")
+                log("  [\(label)] exited with code \(process.terminationStatus)")
                 return false
             }
         }

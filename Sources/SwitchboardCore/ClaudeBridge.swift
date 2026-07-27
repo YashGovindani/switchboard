@@ -1,11 +1,11 @@
 import Foundation
 
-enum ClaudeError: Error, CustomStringConvertible {
+public enum ClaudeError: Error, CustomStringConvertible {
     case cliNotFound
     case badExit(Int32, String)
     case unparseableOutput(String)
 
-    var description: String {
+    public var description: String {
         switch self {
         case .cliNotFound:
             return "claude CLI not found in PATH"
@@ -19,8 +19,8 @@ enum ClaudeError: Error, CustomStringConvertible {
 
 /// Translates a natural-language action prompt into concrete zsh commands
 /// using the local `claude` CLI in headless (-p) mode.
-enum ClaudeBridge {
-    static func generateCommands(for prompt: String) throws -> [String] {
+public enum ClaudeBridge {
+    public static func generateCommands(for prompt: String) throws -> [String] {
         let instruction = """
         Translate the following intent into macOS zsh shell commands.
 

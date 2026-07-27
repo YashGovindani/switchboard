@@ -1,10 +1,11 @@
 import Foundation
+import SwitchboardCore
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 func usage() {
     print("""
-    switchboard — AI-configured environment switcher (phase 1)
+    switchboard — AI-configured environment switcher
 
     Usage:
       switchboard list                     List configured environments
@@ -19,17 +20,6 @@ func usage() {
 
 func findEnvironment(_ name: String, in config: Config) -> Environment? {
     config.environments.first { $0.name == name }
-}
-
-/// Returns the commands for an action, generating and caching them if needed.
-func commands(for action: ActionSpec, env: String, force: Bool = false) throws -> [String] {
-    if !force, let cached = CommandCache.lookup(env: env, action: action) {
-        return cached.commands
-    }
-    print("  [\(action.name)] asking claude to translate prompt…")
-    let generated = try ClaudeBridge.generateCommands(for: action.prompt)
-    try CommandCache.store(env: env, action: action, commands: generated)
-    return generated
 }
 
 do {
@@ -48,11 +38,7 @@ do {
             exit(1)
         }
         print("Opening environment '\(env.name)'…")
-        var allOK = true
-        for action in env.actions {
-            let cmds = try commands(for: action, env: env.name)
-            if !Runner.run(cmds, label: action.name) { allOK = false }
-        }
+        let allOK = Opener.open(env) { print($0) }
         print(allOK ? "Done." : "Done, with errors.")
         exit(allOK ? 0 : 1)
 
@@ -79,7 +65,7 @@ do {
         }
         let only = arguments.count > 2 ? arguments[2] : nil
         for action in env.actions where only == nil || action.name == only {
-            let cmds = try commands(for: action, env: env.name, force: true)
+            let cmds = try Opener.commands(for: action, in: env.name, force: true) { print($0) }
             print("  [\(action.name)] regenerated \(cmds.count) command(s)")
         }
 
