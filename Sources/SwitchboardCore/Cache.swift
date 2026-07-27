@@ -40,6 +40,13 @@ public enum CommandCache {
         return entry
     }
 
+    /// Drops every cached entry belonging to an environment (used on delete).
+    public static func removeAll(env: String) {
+        var cache = load()
+        cache = cache.filter { !$0.key.hasPrefix("\(env)/") }
+        try? save(cache)
+    }
+
     public static func store(env: String, action: ActionSpec, commands: [String]) throws {
         var cache = load()
         cache[key(env: env, action: action.name)] = CachedAction(

@@ -28,6 +28,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if hotKey == nil {
             showError("Could not register ⌥Space — another app may already use it.")
         }
+
+        NotificationCenter.default.addObserver(
+            forName: .switchboardPanelResize, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, let panel = self.panel,
+                  let width = notification.userInfo?["width"] as? Double,
+                  let height = notification.userInfo?["height"] as? Double
+            else { return }
+            let old = panel.frame
+            let newFrame = NSRect(
+                x: old.midX - width / 2,
+                y: old.maxY - height,
+                width: width,
+                height: height
+            )
+            // Matches the SwiftUI easeInOut(0.28) on chatOpen so the panel
+            // and its content animate as one.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.28
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(newFrame, display: true)
+            }
+        }
     }
 
     @objc private func toggleOverlay() {
@@ -47,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 560, height: 420)
+        hosting.autoresizingMask = [.width, .height]
 
         let panel = OverlayPanel(contentView: hosting, size: hosting.frame.size)
         self.panel = panel
