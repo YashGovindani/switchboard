@@ -45,13 +45,16 @@ cp .build/release/switchboard ~/.local/bin/   # or anywhere on your PATH
 
 Switchboard runs in the background — no Dock icon, just a menu-bar icon.
 
-- Press **⌥ Space** anywhere to toggle the switcher panel (it also appears over fullscreen apps).
+- Press **⌥ Space** anywhere to toggle the switcher panel (it also appears over fullscreen apps). Change the shortcut from the menu-bar icon → **Change Shortcut…**; enable **Start at Login** there too.
+- **Type to filter** environments, **↑/↓** to select, **Enter** to open — or just click.
 - **Click an environment** (or its → button) to open it: the panel dismisses and the actions run in the background (the menu-bar icon shows an hourglass while working). Every window the actions create is recorded as belonging to that environment and taken **fullscreen onto its own Space**.
 - **Open it again → it switches, not duplicates.** If the environment's windows are still alive, Switchboard focuses them (macOS jumps to their Spaces) instead of re-running the actions; the previous environment's non-fullscreen windows are minimized out of the way. Actions only re-run when nothing of the environment survives (e.g. after a reboot).
 - Window control needs the **Accessibility permission** — macOS prompts once on first switch (grant in System Settings → Privacy & Security → Accessibility). Run `scripts/setup-signing.sh` before installing so the grant persists across rebuilds.
 - **New Environment**: type a name and press Enter — the environment is created immediately (no Save button anywhere; everything persists as you go).
 - **Add action** opens a chat pane with your local Claude: describe what the action should do in plain English, watch the reply stream in, refine it ("use port 5175", "also open the staging URL"), then click **Create action** on the proposed steps. The agreed commands are cached at that moment, so opening the environment later runs exactly what you approved — instantly, with no re-translation.
-- **Edit** (✏️) an environment to manage its actions, or an action to revise it — the chat reopens pre-loaded with the action's current intent and commands. The header shows the environment you're editing, with **Add action** beside it.
+- **Edit** (✏️) an environment to manage its actions, or an action to revise it — the chat reopens pre-loaded with the action's current intent and commands. The header shows the environment you're editing (click the ✏️ beside it to **rename**), with **Add action** beside it.
+- **Cleanup actions** — each environment has a second list, designed in the same chat via **Add cleanup**: teardown steps (stop servers, remove worktrees, …) for when the task is done.
+- **Finish task** (⏹ on an environment row, or `switchboard finish <env>`): runs the cleanup actions, closes the environment's tracked windows, and clears its tracking. The environment definition stays for next time.
 - **Copy** (⧉) an action's description, **delete** (🗑) an environment or action with an inline confirm: first click shows "Sure?", second click deletes.
 - **Escape** (or clicking elsewhere) dismisses the panel.
 - Menu-bar menu: show the panel, open the config file, quit.
@@ -61,6 +64,7 @@ Switchboard runs in the background — no Dock icon, just a menu-bar icon.
 ```bash
 switchboard list                     # list configured environments
 switchboard open <env>               # open an environment (generates & caches commands on first run)
+switchboard finish <env>             # run an environment's cleanup actions
 switchboard show <env>               # show each action's prompt and its cached commands
 switchboard refresh <env> [action]   # force re-translation of prompts (all actions, or one)
 ```
@@ -105,5 +109,5 @@ Generated commands are cached in `~/.config/switchboard/cache.json`, keyed by a 
 - [x] **Phase 2 — Background app**: menu-bar agent, global ⌥Space hotkey, floating panel to open/create environments
 - [x] **Phase 2.5 — Chat-designed actions**: streaming chat with local Claude to design/edit actions; live-saving builder; edit/delete for environments and actions
 - [x] **Phase 3 — Window switching**: per-environment window tracking, focus-instead-of-duplicate, minimize on switch, auto-fullscreen, Accessibility flow with stable code signing
-- [ ] **Phase 4 — Lifecycle**: create/finish tasks with user-defined init & cleanup actions
-- [ ] **Phase 5 — UI iterations & settings**: keyboard navigation, environment rename, configurable shortcut
+- [x] **Phase 4 — Lifecycle**: per-environment cleanup actions and "Finish task" (cleanup + close windows) in app and CLI
+- [x] **Phase 5 — Settings & polish**: type-to-filter with keyboard navigation, environment rename, recordable global shortcut, start at login
