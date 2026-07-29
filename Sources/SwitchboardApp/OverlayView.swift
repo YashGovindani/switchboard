@@ -10,6 +10,8 @@ struct OverlayView: View {
     @State private var config: Config
     @State private var creating = false
     @State private var editingEnv: String?
+    @State private var builderName: String?
+    @State private var addActionRequest = 0
     @State private var chatOpen = false
     @State private var errorMessage: String?
 
@@ -32,6 +34,10 @@ struct OverlayView: View {
                 NewEnvironmentView(
                     chatOpen: $chatOpen,
                     initialName: editingEnv,
+                    addActionRequest: addActionRequest,
+                    onNameConfirmed: { name in
+                        withAnimation(.easeInOut(duration: 0.28)) { builderName = name }
+                    },
                     onCreate: { name in
                         if let existing = config.environments.first(where: { $0.name == name }) {
                             return existing.actions
@@ -69,14 +75,14 @@ struct OverlayView: View {
                     .padding(.bottom, 8)
             }
         }
-        .frame(width: chatOpen ? 940 : 560, height: chatOpen ? 600 : 420)
+        .frame(width: chatOpen ? 1020 : 560, height: chatOpen ? 620 : 420)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator, lineWidth: 1))
         .onChange(of: chatOpen) { open in
             NotificationCenter.default.post(
                 name: .switchboardPanelResize,
                 object: nil,
-                userInfo: ["width": open ? 940.0 : 560.0, "height": open ? 600.0 : 420.0]
+                userInfo: ["width": open ? 1020.0 : 560.0, "height": open ? 620.0 : 420.0]
             )
         }
     }
@@ -90,6 +96,7 @@ struct OverlayView: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         creating = false
                         chatOpen = false
+                        builderName = nil
                     }
                 } label: {
                     Image(systemName: "chevron.left")
@@ -99,9 +106,19 @@ struct OverlayView: View {
                 .help("Back to environments")
             }
             Image(systemName: "rectangle.3.group")
-            Text("Switchboard").font(.headline)
+            Text(creating ? (builderName ?? "New Environment") : "Switchboard")
+                .font(.headline)
             Spacer()
-            if !creating {
+            if creating {
+                if builderName != nil {
+                    Button {
+                        addActionRequest += 1
+                    } label: {
+                        Label("Add action", systemImage: "plus")
+                    }
+                    .disabled(chatOpen)
+                }
+            } else {
                 Button {
                     editingEnv = nil
                     creating = true
@@ -142,6 +159,7 @@ struct OverlayView: View {
                                     }
                                     persist()
                                     CommandCache.removeAll(env: env.name)
+                                    WindowTracker.shared.forget(env: env.name)
                                 }
                             )
                         }
@@ -159,6 +177,29 @@ struct OverlayView: View {
         } catch {
             errorMessage = "Failed to save config: \(error.localizedDescription)"
         }
+    }
+}
+
+/// Copies the given text to the clipboard, flashing a checkmark as feedback.
+struct CopyButton: View {
+    let text: String
+    let help: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            withAnimation { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+        }
+        .buttonStyle(.plain)
+        .help(copied ? "Copied!" : help)
     }
 }
 
@@ -269,6 +310,11 @@ struct NewEnvironmentView: View {
     @FocusState private var nameFocused: Bool
     @Namespace private var animation
 
+    /// Incremented by the header's Add action button; observed to open the chat.
+    let addActionRequest: Int
+    /// Called once the environment's name is known (name step confirmed, or
+    /// entering via edit) so the header can display it.
+    let onNameConfirmed: (String) -> Void
     /// Called when the name step is confirmed; creates/persists the environment
     /// immediately and returns any actions it already has.
     let onCreate: (String) -> [ActionSpec]
@@ -281,6 +327,8 @@ struct NewEnvironmentView: View {
     init(
         chatOpen: Binding<Bool>,
         initialName: String? = nil,
+        addActionRequest: Int = 0,
+        onNameConfirmed: @escaping (String) -> Void,
         onCreate: @escaping (String) -> [ActionSpec],
         onSaveAction: @escaping (String, ActionSpec, [String], String?) -> Void,
         onRemoveAction: @escaping (String, String) -> Void
@@ -288,6 +336,8 @@ struct NewEnvironmentView: View {
         _chatOpen = chatOpen
         _stage = State(initialValue: initialName == nil ? .askName : .building)
         _name = State(initialValue: initialName ?? "")
+        self.addActionRequest = addActionRequest
+        self.onNameConfirmed = onNameConfirmed
         self.onCreate = onCreate
         self.onSaveAction = onSaveAction
         self.onRemoveAction = onRemoveAction
@@ -337,6 +387,7 @@ struct NewEnvironmentView: View {
         guard !trimmedName.isEmpty else { return }
         let existing = onCreate(trimmedName)
         actions = existing.map { DraftAction(name: $0.name, prompt: $0.prompt) }
+        onNameConfirmed(trimmedName)
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             stage = .building
         }
@@ -348,47 +399,32 @@ struct NewEnvironmentView: View {
     private var buildingView: some View {
         HStack(spacing: 0) {
             leftColumn
+                .frame(width: 560)
 
             if chatOpen {
                 Divider()
                 chatPane
-                    .frame(width: 380)
+                    .frame(maxWidth: .infinity)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .onAppear {
             // Entering via "edit environment": load its existing actions.
-            if stage == .building && actions.isEmpty {
-                actions = onCreate(trimmedName).map { DraftAction(name: $0.name, prompt: $0.prompt) }
+            if stage == .building {
+                if actions.isEmpty {
+                    actions = onCreate(trimmedName).map { DraftAction(name: $0.name, prompt: $0.prompt) }
+                }
+                onNameConfirmed(trimmedName)
             }
+        }
+        .onChange(of: addActionRequest) { _ in
+            guard stage == .building else { return }
+            startNewAction()
         }
     }
 
     private var leftColumn: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(trimmedName)
-                    .font(.headline)
-                    .matchedGeometryEffect(id: "envName", in: animation)
-                Spacer()
-                Button {
-                    // A leftover edit conversation shouldn't leak into a new action.
-                    if editingActionName != nil {
-                        editingActionName = nil
-                        chat.reset()
-                    }
-                    withAnimation(.easeInOut(duration: 0.28)) {
-                        chatOpen = true
-                    }
-                } label: {
-                    Label("Add action", systemImage: "plus")
-                }
-                .disabled(chatOpen)
-            }
-            .padding(14)
-
-            Divider()
-
             if actions.isEmpty {
                 Spacer()
                 Text("No actions yet — add one.")
@@ -407,6 +443,7 @@ struct NewEnvironmentView: View {
                                         .lineLimit(2)
                                 }
                                 Spacer()
+                                CopyButton(text: action.prompt, help: "Copy action description")
                                 Button {
                                     startEditing(action)
                                 } label: {
@@ -473,6 +510,18 @@ struct NewEnvironmentView: View {
                 editingActionName = nil
                 chat.reset()
             }
+        }
+    }
+
+    /// Opens the chat for a brand-new action, discarding any leftover edit
+    /// conversation so contexts never leak between actions.
+    private func startNewAction() {
+        if editingActionName != nil {
+            editingActionName = nil
+            chat.reset()
+        }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            chatOpen = true
         }
     }
 
