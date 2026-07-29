@@ -29,6 +29,8 @@ git clone git@github.com:YashGovindani/switchboard.git
 cd switchboard
 
 # The menu-bar app (recommended)
+./scripts/setup-signing.sh           # one-time: stable signing identity, so the
+                                     # Accessibility grant survives rebuilds
 ./scripts/bundle.sh --install        # builds Switchboard.app → /Applications
 open /Applications/Switchboard.app
 
@@ -44,11 +46,13 @@ cp .build/release/switchboard ~/.local/bin/   # or anywhere on your PATH
 Switchboard runs in the background — no Dock icon, just a menu-bar icon.
 
 - Press **⌥ Space** anywhere to toggle the switcher panel (it also appears over fullscreen apps).
-- **Click an environment** (or its → button) to open it: the panel dismisses and the actions run in the background (the menu-bar icon shows an hourglass while working).
+- **Click an environment** (or its → button) to open it: the panel dismisses and the actions run in the background (the menu-bar icon shows an hourglass while working). Every window the actions create is recorded as belonging to that environment and taken **fullscreen onto its own Space**.
+- **Open it again → it switches, not duplicates.** If the environment's windows are still alive, Switchboard focuses them (macOS jumps to their Spaces) instead of re-running the actions; the previous environment's non-fullscreen windows are minimized out of the way. Actions only re-run when nothing of the environment survives (e.g. after a reboot).
+- Window control needs the **Accessibility permission** — macOS prompts once on first switch (grant in System Settings → Privacy & Security → Accessibility). Run `scripts/setup-signing.sh` before installing so the grant persists across rebuilds.
 - **New Environment**: type a name and press Enter — the environment is created immediately (no Save button anywhere; everything persists as you go).
 - **Add action** opens a chat pane with your local Claude: describe what the action should do in plain English, watch the reply stream in, refine it ("use port 5175", "also open the staging URL"), then click **Create action** on the proposed steps. The agreed commands are cached at that moment, so opening the environment later runs exactly what you approved — instantly, with no re-translation.
-- **Edit** (✏️) an environment to manage its actions, or an action to revise it — the chat reopens pre-loaded with the action's current intent and commands.
-- **Delete** (🗑) an environment or action with an inline confirm: first click shows "Sure?", second click deletes.
+- **Edit** (✏️) an environment to manage its actions, or an action to revise it — the chat reopens pre-loaded with the action's current intent and commands. The header shows the environment you're editing, with **Add action** beside it.
+- **Copy** (⧉) an action's description, **delete** (🗑) an environment or action with an inline confirm: first click shows "Sure?", second click deletes.
 - **Escape** (or clicking elsewhere) dismisses the panel.
 - Menu-bar menu: show the panel, open the config file, quit.
 
@@ -85,6 +89,8 @@ Generated commands are cached in `~/.config/switchboard/cache.json`, keyed by a 
 ## Features
 
 - **⌥Space, anywhere** — a global hotkey summons a Spotlight-style floating panel, even over fullscreen apps.
+- **Real switching, not relaunching** — each environment's windows are tracked by their window-server IDs (persisted in `~/.config/switchboard/state.json`); reopening focuses what's already there, switching minimizes what you left, and every action is generated to open a fresh window so environments never share them.
+- **Fullscreen-first** — newly opened environment windows are pushed into native fullscreen, one Space per window, so switching environments is a clean jump between Spaces.
 - **Chat-designed actions** — actions are agreed in a conversation with your local Claude, not typed as config. The panel expands into a split view (environment on the left, chat on the right), replies stream in live, and each conversation runs on a persistent `claude` stream-json session — later turns are fast and cheap, and no transcript is resent.
 - **Approve before it ever runs** — Claude proposes concrete numbered steps; nothing becomes an action until you click Create. The approved commands go straight into the cache.
 - **Generate once, cache forever** — opening an environment executes the cached commands instantly; Claude is only consulted when designing or editing an action (or on CLI `refresh`).
@@ -98,6 +104,6 @@ Generated commands are cached in `~/.config/switchboard/cache.json`, keyed by a 
 - [x] **Phase 1 — CLI engine**: prompt → command translation, caching, environment opener
 - [x] **Phase 2 — Background app**: menu-bar agent, global ⌥Space hotkey, floating panel to open/create environments
 - [x] **Phase 2.5 — Chat-designed actions**: streaming chat with local Claude to design/edit actions; live-saving builder; edit/delete for environments and actions
-- [ ] **Phase 3 — Window switching**: track each environment's windows; focus on switch, fullscreen/Spaces aware
+- [x] **Phase 3 — Window switching**: per-environment window tracking, focus-instead-of-duplicate, minimize on switch, auto-fullscreen, Accessibility flow with stable code signing
 - [ ] **Phase 4 — Lifecycle**: create/finish tasks with user-defined init & cleanup actions
 - [ ] **Phase 5 — UI iterations & settings**: keyboard navigation, environment rename, configurable shortcut
