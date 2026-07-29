@@ -37,7 +37,14 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+# Prefer the stable "Switchboard Signing" identity (created by
+# scripts/setup-signing.sh) so macOS privacy grants survive rebuilds;
+# fall back to ad-hoc when it doesn't exist.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Switchboard Signing"; then
+    codesign --force --sign "Switchboard Signing" "$APP"
+else
+    codesign --force --sign - "$APP"
+fi
 
 echo "Built $APP"
 
