@@ -2,21 +2,43 @@ import Foundation
 
 public struct Config: Codable {
     public var environments: [Environment]
+    /// Global hotkey override; nil means the default (⌥Space).
+    public var hotkey: HotKeyConfig?
 
-    public init(environments: [Environment]) {
+    public init(environments: [Environment], hotkey: HotKeyConfig? = nil) {
         self.environments = environments
+        self.hotkey = hotkey
     }
+}
+
+/// A recorded global shortcut (Carbon key code + modifier mask).
+public struct HotKeyConfig: Codable, Equatable {
+    public var keyCode: UInt32
+    public var modifiers: UInt32
+    public var display: String
+
+    public init(keyCode: UInt32, modifiers: UInt32, display: String) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.display = display
+    }
+
+    /// kVK_Space + optionKey
+    public static let optionSpace = HotKeyConfig(keyCode: 49, modifiers: 2048, display: "⌥Space")
 }
 
 public struct Environment: Codable, Identifiable, Hashable {
     public var name: String
     public var actions: [ActionSpec]
+    /// Teardown actions run by "Finish task"; absent in older configs.
+    public var cleanup: [ActionSpec]?
 
     public var id: String { name }
 
-    public init(name: String, actions: [ActionSpec]) {
+    public init(name: String, actions: [ActionSpec], cleanup: [ActionSpec]? = nil) {
         self.name = name
         self.actions = actions
+        self.cleanup = cleanup
     }
 }
 

@@ -150,6 +150,35 @@ final class WindowTracker {
         lock.unlock()
     }
 
+    func rename(env old: String, to new: String) {
+        lock.lock()
+        if let windows = windowsByEnv.removeValue(forKey: old) {
+            windowsByEnv[new] = windows
+        }
+        saveLocked()
+        lock.unlock()
+    }
+
+    /// Closes the environment's live windows (presses each AX close button)
+    /// and forgets its tracking. Part of "Finish task".
+    func closeWindows(of env: String) {
+        if AXIsProcessTrusted() {
+            for tracked in liveWindows(for: env) {
+                for axWindow in axWindows(of: tracked.pid) {
+                    var id: CGWindowID = 0
+                    guard _AXUIElementGetWindow(axWindow, &id) == .success, id == tracked.windowID else { continue }
+                    var button: CFTypeRef?
+                    AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &button)
+                    if let button, CFGetTypeID(button) == AXUIElementGetTypeID() {
+                        AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+                    }
+                    break
+                }
+            }
+        }
+        forget(env: env)
+    }
+
     // MARK: Accessibility actions
 
     /// Prompts for the Accessibility permission if not yet granted.

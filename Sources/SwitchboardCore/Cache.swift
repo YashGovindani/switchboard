@@ -40,11 +40,28 @@ public enum CommandCache {
         return entry
     }
 
-    /// Drops every cached entry belonging to an environment (used on delete).
+    /// Drops every cached entry belonging to an environment (used on delete),
+    /// including its cleanup namespace.
     public static func removeAll(env: String) {
         var cache = load()
-        cache = cache.filter { !$0.key.hasPrefix("\(env)/") }
+        cache = cache.filter { !$0.key.hasPrefix("\(env)/") && !$0.key.hasPrefix("\(env)#cleanup/") }
         try? save(cache)
+    }
+
+    /// Rewrites an environment's cache keys after a rename.
+    public static func renameEnv(_ old: String, to new: String) {
+        let cache = load()
+        var updated: [String: CachedAction] = [:]
+        for (key, value) in cache {
+            if key.hasPrefix("\(old)/") {
+                updated[new + key.dropFirst(old.count)] = value
+            } else if key.hasPrefix("\(old)#cleanup/") {
+                updated["\(new)#cleanup" + key.dropFirst("\(old)#cleanup".count)] = value
+            } else {
+                updated[key] = value
+            }
+        }
+        try? save(updated)
     }
 
     public static func store(env: String, action: ActionSpec, commands: [String]) throws {

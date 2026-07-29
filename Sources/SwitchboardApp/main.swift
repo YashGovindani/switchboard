@@ -1,4 +1,6 @@
 import AppKit
+import Carbon.HIToolbox
+import ServiceManagement
 import SwiftUI
 import SwitchboardCore
 
@@ -7,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var panel: OverlayPanel?
     private var activeEnv: String?
+    private var showMenuItem: NSMenuItem?
+    private var loginMenuItem: NSMenuItem?
+    private var recorderWindow: NSWindow?
+    private var recorderMonitor: Any?
     private var opening = 0 {
         didSet { updateStatusIcon() }
     }
@@ -19,17 +25,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusIcon()
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "Show Switchboard   ⌥Space", action: #selector(toggleOverlay), keyEquivalent: "")
+        let show = NSMenuItem(title: "Show Switchboard", action: #selector(toggleOverlay), keyEquivalent: "")
+        menu.addItem(show)
+        showMenuItem = show
+        menu.addItem(withTitle: "Change Shortcut…", action: #selector(changeShortcut), keyEquivalent: "")
+        let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
+        loginMenuItem = login
         menu.addItem(withTitle: "Open config file", action: #selector(openConfig), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Switchboard", action: #selector(quit), keyEquivalent: "q")
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
 
-        hotKey = HotKey.optionSpace { [weak self] in self?.toggleOverlay() }
-        if hotKey == nil {
-            showError("Could not register ⌥Space — another app may already use it.")
-        }
+        let hotkeyConfig = (try? ConfigStore.load())?.hotkey ?? .optionSpace
+        applyHotKey(hotkeyConfig)
 
         NotificationCenter.default.addObserver(
             forName: .switchboardPanelResize, object: nil, queue: .main
@@ -68,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = OverlayView(
             config: config,
             onOpen: { [weak self] (env: SwitchboardCore.Environment) in self?.openEnvironment(env) },
+            onFinish: { [weak self] (env: SwitchboardCore.Environment) in self?.finishEnvironment(env) },
             onDismiss: { [weak self] in self?.panel?.orderOut(nil) }
         )
         let hosting = NSHostingView(rootView: view)
@@ -120,6 +132,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// "Finish task": run the environment's cleanup actions, then close its
+    /// tracked windows and forget them.
+    private func finishEnvironment(_ env: SwitchboardCore.Environment) {
+        opening += 1
+        WindowTracker.ensureAccessibility()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = Opener.finish(env) { NSLog("switchboard: %@", $0) }
+            WindowTracker.shared.closeWindows(of: env.name)
+            DispatchQueue.main.async {
+                if self?.activeEnv == env.name { self?.activeEnv = nil }
+                self?.opening -= 1
+                if !ok {
+                    self?.showError("Some cleanup actions of '\(env.name)' failed. Run `switchboard finish \(env.name)` in a terminal for details.")
+                }
+            }
+        }
+    }
+
+    // MARK: Hotkey
+
+    private func applyHotKey(_ config: HotKeyConfig) {
+        hotKey = nil // unregisters the previous one
+        hotKey = HotKey(keyCode: config.keyCode, modifiers: config.modifiers) { [weak self] in
+            self?.toggleOverlay()
+        }
+        showMenuItem?.title = "Show Switchboard   \(config.display)"
+        if hotKey == nil {
+            showError("Could not register \(config.display) — another app may already use it.")
+        }
+    }
+
+    @objc private func changeShortcut() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 110),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Switchboard Shortcut"
+        window.level = .floating
+        window.isReleasedWhenClosed = false
+        let label = NSTextField(labelWithString: "Press the new shortcut\n(needs ⌘, ⌥ or ⌃ — Esc cancels)")
+        label.alignment = .center
+        label.frame = NSRect(x: 20, y: 30, width: 300, height: 50)
+        window.contentView?.addSubview(label)
+        window.center()
+        recorderWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+
+        recorderMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if event.keyCode == 53 { // Escape
+                self.closeRecorder()
+                return nil
+            }
+            let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard flags.contains(.command) || flags.contains(.option) || flags.contains(.control) else {
+                return nil // ignore unmodified keys; keep recording
+            }
+            let config = HotKeyConfig(
+                keyCode: UInt32(event.keyCode),
+                modifiers: Self.carbonModifiers(flags),
+                display: Self.shortcutDisplay(flags: flags, event: event)
+            )
+            self.closeRecorder()
+            self.applyHotKey(config)
+            if var stored = try? ConfigStore.load() {
+                stored.hotkey = config
+                try? ConfigStore.save(stored)
+            }
+            return nil
+        }
+    }
+
+    private func closeRecorder() {
+        if let recorderMonitor { NSEvent.removeMonitor(recorderMonitor) }
+        recorderMonitor = nil
+        recorderWindow?.orderOut(nil)
+        recorderWindow = nil
+    }
+
+    private static func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32 {
+        var carbon: UInt32 = 0
+        if flags.contains(.command) { carbon |= UInt32(cmdKey) }
+        if flags.contains(.option) { carbon |= UInt32(optionKey) }
+        if flags.contains(.control) { carbon |= UInt32(controlKey) }
+        if flags.contains(.shift) { carbon |= UInt32(shiftKey) }
+        return carbon
+    }
+
+    private static func shortcutDisplay(flags: NSEvent.ModifierFlags, event: NSEvent) -> String {
+        var parts = ""
+        if flags.contains(.control) { parts += "⌃" }
+        if flags.contains(.option) { parts += "⌥" }
+        if flags.contains(.shift) { parts += "⇧" }
+        if flags.contains(.command) { parts += "⌘" }
+        let key: String
+        switch Int(event.keyCode) {
+        case kVK_Space: key = "Space"
+        case kVK_Return: key = "Return"
+        case kVK_Tab: key = "Tab"
+        default: key = event.charactersIgnoringModifiers?.uppercased() ?? "?"
+        }
+        return parts + key
+    }
+
+    // MARK: Login item
+
+    @objc private func toggleLoginItem() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled {
+                try service.unregister()
+            } else {
+                try service.register()
+            }
+        } catch {
+            showError("Could not update the login item: \(error.localizedDescription)")
+        }
+        loginMenuItem?.state = service.status == .enabled ? .on : .off
     }
 
     private func updateStatusIcon() {

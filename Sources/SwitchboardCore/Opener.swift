@@ -19,13 +19,17 @@ public enum Opener {
         return generated
     }
 
-    /// Opens an environment: resolves and runs every action. Returns overall success.
+    /// Cache namespace for an environment's cleanup actions, kept separate so
+    /// cleanup and regular actions may share names.
+    public static func cleanupCacheEnv(_ env: String) -> String { env + "#cleanup" }
+
+    /// Resolves and runs a list of actions against a cache namespace.
     @discardableResult
-    public static func open(_ env: Environment, log: ((String) -> Void)? = nil) -> Bool {
+    public static func run(_ actions: [ActionSpec], cacheEnv: String, log: ((String) -> Void)? = nil) -> Bool {
         var allOK = true
-        for action in env.actions {
+        for action in actions {
             do {
-                let cmds = try commands(for: action, in: env.name, log: log)
+                let cmds = try commands(for: action, in: cacheEnv, log: log)
                 if !Runner.run(cmds, label: action.name, log: log) { allOK = false }
             } catch {
                 log?("  [\(action.name)] error: \(error)")
@@ -33,5 +37,17 @@ public enum Opener {
             }
         }
         return allOK
+    }
+
+    /// Opens an environment: resolves and runs every action. Returns overall success.
+    @discardableResult
+    public static func open(_ env: Environment, log: ((String) -> Void)? = nil) -> Bool {
+        run(env.actions, cacheEnv: env.name, log: log)
+    }
+
+    /// Runs an environment's cleanup actions (if any).
+    @discardableResult
+    public static func finish(_ env: Environment, log: ((String) -> Void)? = nil) -> Bool {
+        run(env.cleanup ?? [], cacheEnv: cleanupCacheEnv(env.name), log: log)
     }
 }
