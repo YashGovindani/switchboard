@@ -2,11 +2,15 @@ import Foundation
 
 public struct Config: Codable {
     public var environments: [Environment]
+    /// Reusable action sets: create environments pre-filled from these.
+    /// Same shape as an environment (name + actions + cleanup).
+    public var templates: [Environment]?
     /// Global hotkey override; nil means the default (⌥Space).
     public var hotkey: HotKeyConfig?
 
-    public init(environments: [Environment], hotkey: HotKeyConfig? = nil) {
+    public init(environments: [Environment], templates: [Environment]? = nil, hotkey: HotKeyConfig? = nil) {
         self.environments = environments
+        self.templates = templates
         self.hotkey = hotkey
     }
 }

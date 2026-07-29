@@ -53,6 +53,7 @@ Switchboard runs in the background — no Dock icon, just a menu-bar icon.
 - **New Environment**: type a name and press Enter — the environment is created immediately (no Save button anywhere; everything persists as you go).
 - **Add action** opens a chat pane with your local Claude: describe what the action should do in plain English, watch the reply stream in, refine it ("use port 5175", "also open the staging URL"), then click **Create action** on the proposed steps. The agreed commands are cached at that moment, so opening the environment later runs exactly what you approved — instantly, with no re-translation.
 - **Edit** (✏️) an environment to manage its actions, or an action to revise it — the chat reopens pre-loaded with the action's current intent and commands. The header shows the environment you're editing (click the ✏️ beside it to **rename**), with **Add action** beside it.
+- **Templates** — the ⧉ button in the builder header saves the environment's actions + cleanup as a template (saving again overwrites it). The new-environment screen then offers **"start from a template"**: pick one and the environment is pre-filled — cached commands included, so nothing is re-translated. Clicking a template with the name field empty names the environment after the template.
 - **Cleanup actions** — each environment has a second list, designed in the same chat via **Add cleanup**: teardown steps (stop servers, remove worktrees, …) for when the task is done.
 - **Finish task** (⏹ on an environment row, or `switchboard finish <env>`): runs the cleanup actions, closes the environment's tracked windows, and clears its tracking. The environment definition stays for next time.
 - **Copy** (⧉) an action's description, **delete** (🗑) an environment or action with an inline confirm: first click shows "Sure?", second click deletes.
@@ -111,3 +112,4 @@ Generated commands are cached in `~/.config/switchboard/cache.json`, keyed by a 
 - [x] **Phase 3 — Window switching**: per-environment window tracking, focus-instead-of-duplicate, minimize on switch, auto-fullscreen, Accessibility flow with stable code signing
 - [x] **Phase 4 — Lifecycle**: per-environment cleanup actions and "Finish task" (cleanup + close windows) in app and CLI
 - [x] **Phase 5 — Settings & polish**: type-to-filter with keyboard navigation, environment rename, recordable global shortcut, start at login
+- [x] **Phase 6 — Templates**: save an environment's init/cleanup behaviour, create pre-filled environments from it

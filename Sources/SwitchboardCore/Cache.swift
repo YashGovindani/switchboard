@@ -48,6 +48,21 @@ public enum CommandCache {
         try? save(cache)
     }
 
+    /// Duplicates one namespace's cached commands into another (both the
+    /// plain and "#cleanup" variants) — used when saving or instantiating
+    /// templates so no re-translation is needed.
+    public static func copyNamespace(from old: String, to new: String) {
+        var cache = load()
+        for (key, value) in load() {
+            if key.hasPrefix("\(old)/") {
+                cache[new + key.dropFirst(old.count)] = value
+            } else if key.hasPrefix("\(old)#cleanup/") {
+                cache["\(new)#cleanup" + key.dropFirst("\(old)#cleanup".count)] = value
+            }
+        }
+        try? save(cache)
+    }
+
     /// Rewrites an environment's cache keys after a rename.
     public static func renameEnv(_ old: String, to new: String) {
         let cache = load()

@@ -15,6 +15,7 @@ struct OverlayView: View {
     @State private var renameText = ""
     @State private var addActionRequest = 0
     @State private var chatOpen = false
+    @State private var templateSaved = false
     @State private var errorMessage: String?
     @State private var query = ""
     @State private var selected = 0
@@ -77,18 +78,31 @@ struct OverlayView: View {
             chatOpen: $chatOpen,
             initialName: editingEnv,
             addActionRequest: addActionRequest,
+            templates: config.templates ?? [],
+            envExists: { name in config.environments.contains { $0.name == name } },
             onNameConfirmed: { name in
                 withAnimation(.easeInOut(duration: 0.28)) { builderName = name }
                 editingEnv = name
             },
-            onCreate: { name in
+            onCreate: { name, templateName in
                 if let existing = config.environments.first(where: { $0.name == name }) {
                     return existing
                 }
-                let fresh = SwitchboardCore.Environment(name: name, actions: [])
+                var fresh = SwitchboardCore.Environment(name: name, actions: [])
+                if let templateName,
+                   let template = (config.templates ?? []).first(where: { $0.name == templateName }) {
+                    fresh = SwitchboardCore.Environment(name: name, actions: template.actions, cleanup: template.cleanup)
+                    // Bring the template's ready-made commands along.
+                    CommandCache.copyNamespace(from: "template:\(templateName)", to: name)
+                }
                 config.environments.append(fresh)
                 persist()
                 return fresh
+            },
+            onDeleteTemplate: { templateName in
+                config.templates?.removeAll { $0.name == templateName }
+                persist()
+                CommandCache.removeAll(env: "template:\(templateName)")
             },
             onSaveAction: { envName, action, commands, replacing, isCleanup in
                 guard let i = config.environments.firstIndex(where: { $0.name == envName }) else { return }
@@ -175,6 +189,14 @@ struct OverlayView: View {
             if creating {
                 if builderName != nil {
                     Button {
+                        saveTemplate()
+                    } label: {
+                        Image(systemName: templateSaved ? "checkmark.circle.fill" : "square.on.square")
+                            .foregroundStyle(templateSaved ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save this environment's actions as a template")
+                    Button {
                         addActionRequest += 1
                     } label: {
                         Label("Add action", systemImage: "plus")
@@ -191,6 +213,31 @@ struct OverlayView: View {
             }
         }
         .padding(14)
+    }
+
+    /// Snapshots the current environment's actions + cleanup as a template
+    /// (named after the environment; saving again overwrites), including its
+    /// cached commands so instantiations never re-translate.
+    private func saveTemplate() {
+        guard let name = builderName,
+              let env = config.environments.first(where: { $0.name == name })
+        else { return }
+        var templates = config.templates ?? []
+        let template = SwitchboardCore.Environment(name: name, actions: env.actions, cleanup: env.cleanup)
+        if let i = templates.firstIndex(where: { $0.name == name }) {
+            templates[i] = template
+        } else {
+            templates.append(template)
+        }
+        config.templates = templates
+        persist()
+        CommandCache.removeAll(env: "template:\(name)")
+        CommandCache.copyNamespace(from: name, to: "template:\(name)")
+
+        withAnimation { templateSaved = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation { templateSaved = false }
+        }
     }
 
     private func commitRename() {
@@ -451,12 +498,16 @@ struct NewEnvironmentView: View {
 
     /// Incremented by the header's Add action button; observed to open the chat.
     let addActionRequest: Int
+    /// Saved templates offered on the name screen.
+    let templates: [SwitchboardCore.Environment]
+    let envExists: (String) -> Bool
     /// Called once the environment's name is known (name step confirmed, or
     /// entering via edit) so the header can display it.
     let onNameConfirmed: (String) -> Void
     /// Called when the name step is confirmed; creates/persists the environment
-    /// immediately and returns it (with any existing actions).
-    let onCreate: (String) -> SwitchboardCore.Environment
+    /// immediately (from the named template, when given) and returns it.
+    let onCreate: (String, String?) -> SwitchboardCore.Environment
+    let onDeleteTemplate: (String) -> Void
     /// Persists an agreed action and its ready-made commands immediately.
     /// `replacing` names the action being replaced on edit; `isCleanup`
     /// routes to the cleanup list.
@@ -467,8 +518,11 @@ struct NewEnvironmentView: View {
         chatOpen: Binding<Bool>,
         initialName: String? = nil,
         addActionRequest: Int = 0,
+        templates: [SwitchboardCore.Environment] = [],
+        envExists: @escaping (String) -> Bool = { _ in false },
         onNameConfirmed: @escaping (String) -> Void,
-        onCreate: @escaping (String) -> SwitchboardCore.Environment,
+        onCreate: @escaping (String, String?) -> SwitchboardCore.Environment,
+        onDeleteTemplate: @escaping (String) -> Void = { _ in },
         onSaveAction: @escaping (String, ActionSpec, [String], String?, Bool) -> Void,
         onRemoveAction: @escaping (String, String, Bool) -> Void
     ) {
@@ -476,8 +530,11 @@ struct NewEnvironmentView: View {
         _stage = State(initialValue: initialName == nil ? .askName : .building)
         _name = State(initialValue: initialName ?? "")
         self.addActionRequest = addActionRequest
+        self.templates = templates
+        self.envExists = envExists
         self.onNameConfirmed = onNameConfirmed
         self.onCreate = onCreate
+        self.onDeleteTemplate = onDeleteTemplate
         self.onSaveAction = onSaveAction
         self.onRemoveAction = onRemoveAction
     }
@@ -516,15 +573,69 @@ struct NewEnvironmentView: View {
                     .disabled(trimmedName.isEmpty)
                 }
                 .frame(width: 340)
+
+            if !templates.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Or start from a template")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(templates) { template in
+                        HStack(spacing: 8) {
+                            Button {
+                                advance(template: template.name)
+                            } label: {
+                                HStack {
+                                    Image(systemName: "square.on.square")
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(template.name).font(.system(size: 13, weight: .medium))
+                                        Text(template.actions.map(\.name).joined(separator: " · "))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            ConfirmActionButton(help: "Delete template") {
+                                onDeleteTemplate(template.name)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+                    }
+                }
+                .frame(width: 340)
+                .padding(.top, 18)
+            }
             Spacer()
         }
         .onAppear { nameFocused = true }
     }
 
     private func advance() {
-        guard !trimmedName.isEmpty else { return }
-        load(onCreate(trimmedName))
-        onNameConfirmed(trimmedName)
+        advance(template: nil)
+    }
+
+    /// Confirms the name step. With a template and an empty name field, the
+    /// environment takes the template's name (suffixed if taken).
+    private func advance(template: String?) {
+        var envName = trimmedName
+        if envName.isEmpty {
+            guard let template else { return }
+            envName = template
+            var counter = 2
+            while envExists(envName) {
+                envName = "\(template) \(counter)"
+                counter += 1
+            }
+            name = envName
+        }
+        load(onCreate(envName, template))
+        onNameConfirmed(envName)
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             stage = .building
         }
@@ -553,7 +664,7 @@ struct NewEnvironmentView: View {
             // Entering via "edit environment": load its existing actions.
             if stage == .building {
                 if actions.isEmpty && cleanups.isEmpty {
-                    load(onCreate(trimmedName))
+                    load(onCreate(trimmedName, nil))
                 }
                 onNameConfirmed(trimmedName)
             }
