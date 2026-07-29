@@ -32,6 +32,10 @@ public enum ClaudeBridge {
         Rules:
         - Commands must not block: launch GUI apps with `open`, use `code` for VS Code, \
         use `osascript` for iTerm/AppleScript control.
+        - Every command that opens an app MUST open a NEW window dedicated to this action — \
+        never reuse or focus an existing window. Examples: `code --new-window <path>`, \
+        `open -na "Google Chrome" --args --new-window <urls...>`, iTerm via \
+        `create window with default profile`.
         - Prefer a single command when possible.
         - Expand nothing dangerous: no sudo, no rm -rf, no piping remote scripts to shell.
         """
@@ -92,6 +96,10 @@ public enum ClaudeBridge {
 
     Rules for commands: non-blocking (launch GUI apps with `open`, `code` for VS Code, \
     `osascript` for iTerm control), no sudo, no rm -rf, no piping remote scripts to shell. \
+    Every command that opens an app MUST open a NEW window dedicated to this action — never \
+    reuse or focus an existing window. Examples: `code --new-window <path>`, \
+    `open -na "Google Chrome" --args --new-window <urls...>`, iTerm via \
+    `create window with default profile`. \
     Do not use any tools; just answer.
 
     The user's first message follows:

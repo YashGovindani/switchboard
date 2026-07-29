@@ -6,12 +6,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
     private var panel: OverlayPanel?
+    private var activeEnv: String?
     private var opening = 0 {
         didSet { updateStatusIcon() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        installEditMenu()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         updateStatusIcon()
@@ -78,9 +80,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openEnvironment(_ env: SwitchboardCore.Environment) {
+        let previous = activeEnv
+        activeEnv = env.name
         opening += 1
+
+        // First switch triggers the one-time Accessibility prompt; without
+        // the grant, focusing degrades to app-level activation.
+        WindowTracker.ensureAccessibility()
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tracker = WindowTracker.shared
+
+            // Hide the environment we're leaving (fullscreen windows stay
+            // parked on their own Spaces and are skipped).
+            if let previous, previous != env.name {
+                tracker.minimizeNonFullscreen(previous)
+            }
+
+            if tracker.focus(env.name) {
+                // Already open — focused its windows instead of re-running.
+                DispatchQueue.main.async { self?.opening -= 1 }
+                return
+            }
+
+            // Nothing left of this environment: run its actions, learn which
+            // windows they created, and take each one fullscreen (its own
+            // Space) per the fullscreen-first workflow.
+            let before = tracker.snapshot()
             let ok = Opener.open(env) { NSLog("switchboard: %@", $0) }
+            let created = tracker.attributeNewWindows(
+                to: env.name, since: before, expecting: env.actions.count
+            )
+            tracker.makeFullscreen(created)
+
             DispatchQueue.main.async {
                 self?.opening -= 1
                 if !ok {
@@ -104,6 +136,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    /// A background app has no menu bar, but ⌘C/⌘V/⌘X/⌘A only work when an
+    /// Edit menu with those key equivalents exists — so install one invisibly.
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+
+        NSApp.mainMenu = mainMenu
     }
 
     @objc private func openConfig() {
