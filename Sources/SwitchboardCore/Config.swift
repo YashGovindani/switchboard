@@ -32,17 +32,29 @@ public struct HotKeyConfig: Codable, Equatable {
 }
 
 public struct Environment: Codable, Identifiable, Hashable {
+    /// Stable identity, independent of the (renamable) name. Generated for
+    /// configs written before ids existed and persisted on first load.
+    public var id: UUID
     public var name: String
     public var actions: [ActionSpec]
     /// Teardown actions run by "Finish task"; absent in older configs.
     public var cleanup: [ActionSpec]?
 
-    public var id: String { name }
-
-    public init(name: String, actions: [ActionSpec], cleanup: [ActionSpec]? = nil) {
+    public init(id: UUID = UUID(), name: String, actions: [ActionSpec], cleanup: [ActionSpec]? = nil) {
+        self.id = id
         self.name = name
         self.actions = actions
         self.cleanup = cleanup
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, actions, cleanup }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        actions = try container.decode([ActionSpec].self, forKey: .actions)
+        cleanup = try container.decodeIfPresent([ActionSpec].self, forKey: .cleanup)
     }
 }
 
@@ -70,7 +82,20 @@ public enum ConfigStore {
             FileHandle.standardError.write(Data("Created sample config at \(configURL.path)\n".utf8))
         }
         let data = try Data(contentsOf: configURL)
-        return try JSONDecoder().decode(Config.self, from: data)
+        let config = try JSONDecoder().decode(Config.self, from: data)
+
+        // Older configs carry no ids: the decoder just generated fresh ones,
+        // so write them back once to make them permanent.
+        struct Probe: Decodable {
+            struct Entry: Decodable { let id: UUID? }
+            let environments: [Entry]
+            let templates: [Entry]?
+        }
+        if let probe = try? JSONDecoder().decode(Probe.self, from: data),
+           (probe.environments + (probe.templates ?? [])).contains(where: { $0.id == nil }) {
+            try? save(config)
+        }
+        return config
     }
 
     public static func save(_ config: Config) throws {
