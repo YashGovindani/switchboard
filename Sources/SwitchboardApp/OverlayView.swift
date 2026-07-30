@@ -79,7 +79,6 @@ struct OverlayView: View {
             initialName: editingEnv,
             addActionRequest: addActionRequest,
             templates: config.templates ?? [],
-            envExists: { name in config.environments.contains { $0.name == name } },
             onNameConfirmed: { name in
                 withAnimation(.easeInOut(duration: 0.28)) { builderName = name }
                 editingEnv = name
@@ -495,6 +494,7 @@ struct NewEnvironmentView: View {
     @State private var cleanups: [DraftAction] = []
     @State private var editingActionName: String?
     @State private var designingCleanup = false
+    @State private var selectedTemplate: String?
     @Binding var chatOpen: Bool
     @StateObject private var chat = ActionChatModel()
     @FocusState private var nameFocused: Bool
@@ -503,7 +503,6 @@ struct NewEnvironmentView: View {
     let addActionRequest: Int
     /// Saved templates offered on the name screen.
     let templates: [SwitchboardCore.Environment]
-    let envExists: (String) -> Bool
     /// Called once the environment's name is known (name step confirmed, or
     /// entering via edit) so the header can display it.
     let onNameConfirmed: (String) -> Void
@@ -522,7 +521,6 @@ struct NewEnvironmentView: View {
         initialName: String? = nil,
         addActionRequest: Int = 0,
         templates: [SwitchboardCore.Environment] = [],
-        envExists: @escaping (String) -> Bool = { _ in false },
         onNameConfirmed: @escaping (String) -> Void,
         onCreate: @escaping (String, String?) -> SwitchboardCore.Environment,
         onDeleteTemplate: @escaping (String) -> Void = { _ in },
@@ -534,7 +532,6 @@ struct NewEnvironmentView: View {
         _name = State(initialValue: initialName ?? "")
         self.addActionRequest = addActionRequest
         self.templates = templates
-        self.envExists = envExists
         self.onNameConfirmed = onNameConfirmed
         self.onCreate = onCreate
         self.onDeleteTemplate = onDeleteTemplate
@@ -579,17 +576,21 @@ struct NewEnvironmentView: View {
 
             if !templates.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Or start from a template")
+                    Text(selectedTemplate == nil
+                        ? "Optionally start from a template"
+                        : "Starting from '\(selectedTemplate!)' — name it and press Enter")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(templates) { template in
+                        let isSelected = selectedTemplate == template.name
                         HStack(spacing: 8) {
                             Button {
-                                advance(template: template.name)
+                                selectedTemplate = isSelected ? nil : template.name
+                                nameFocused = true
                             } label: {
                                 HStack {
-                                    Image(systemName: "square.on.square")
-                                        .foregroundStyle(.secondary)
+                                    Image(systemName: isSelected ? "checkmark.circle.fill" : "square.on.square")
+                                        .foregroundStyle(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(template.name).font(.system(size: 13, weight: .medium))
                                         Text(template.actions.map(\.name).joined(separator: " · "))
@@ -603,12 +604,16 @@ struct NewEnvironmentView: View {
                             }
                             .buttonStyle(.plain)
                             ConfirmActionButton(help: "Delete template") {
+                                if selectedTemplate == template.name { selectedTemplate = nil }
                                 onDeleteTemplate(template.name)
                             }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(isSelected ? Color.accentColor.opacity(0.15) : .quaternary.opacity(0.4))
+                        )
                     }
                 }
                 .frame(width: 340)
@@ -620,25 +625,9 @@ struct NewEnvironmentView: View {
     }
 
     private func advance() {
-        advance(template: nil)
-    }
-
-    /// Confirms the name step. With a template and an empty name field, the
-    /// environment takes the template's name (suffixed if taken).
-    private func advance(template: String?) {
-        var envName = trimmedName
-        if envName.isEmpty {
-            guard let template else { return }
-            envName = template
-            var counter = 2
-            while envExists(envName) {
-                envName = "\(template) \(counter)"
-                counter += 1
-            }
-            name = envName
-        }
-        load(onCreate(envName, template))
-        onNameConfirmed(envName)
+        guard !trimmedName.isEmpty else { return }
+        load(onCreate(trimmedName, selectedTemplate))
+        onNameConfirmed(trimmedName)
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             stage = .building
         }
