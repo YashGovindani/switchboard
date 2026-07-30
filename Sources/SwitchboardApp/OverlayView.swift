@@ -328,13 +328,16 @@ struct OverlayView: View {
                                         WindowTracker.shared.forget(env: env.name)
                                     }
                                 )
-                                .id(index)
                             }
                         }
                         .padding(10)
                     }
                     .onChange(of: selected) { index in
-                        withAnimation { proxy.scrollTo(index) }
+                        guard filtered.indices.contains(index) else { return }
+                        withAnimation { proxy.scrollTo(filtered[index].id) }
+                    }
+                    .onChange(of: filtered.count) { count in
+                        selected = min(selected, max(count - 1, 0))
                     }
                 }
             }
