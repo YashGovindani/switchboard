@@ -612,7 +612,9 @@ struct NewEnvironmentView: View {
                         .padding(.vertical, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(isSelected ? Color.accentColor.opacity(0.15) : .quaternary.opacity(0.4))
+                                .fill(isSelected
+                                    ? AnyShapeStyle(Color.accentColor.opacity(0.15))
+                                    : AnyShapeStyle(.quaternary.opacity(0.4)))
                         )
                     }
                 }
