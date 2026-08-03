@@ -84,43 +84,24 @@ struct OverlayView: View {
             isTemplate: builderIsTemplate,
             initialEnv: (builderIsTemplate ? templates : environments).first { $0.id == editingEnv },
             addActionRequest: addActionRequest,
-            templates: builderIsTemplate ? [] : templates,
+            templates: templates,
             onEnvReady: { env in
                 withAnimation(.easeInOut(duration: 0.28)) { builderName = env.name }
                 editingEnv = env.id
             },
-            onCreate: { name, templateID in
-                if builderIsTemplate {
-                    if let existing = templates.first(where: { $0.name == name }) {
-                        return existing
-                    }
-                    let fresh = SwitchboardCore.Environment(name: name, actions: [])
-                    templates.append(fresh)
-                    TemplateStore.save(templates)
-                    return fresh
-                }
-                if let existing = environments.first(where: { $0.name == name }) {
+            onCreate: { name, templateIDs in
+                let collection = builderIsTemplate ? templates : environments
+                if let existing = collection.first(where: { $0.name == name }) {
                     return existing
                 }
-                var fresh = SwitchboardCore.Environment(name: name, actions: [])
-                if let templateID,
-                   let template = templates.first(where: { $0.id == templateID }) {
-                    // Copy the template's actions with fresh record ids but
-                    // shared chat links, and bring its cached commands along.
-                    fresh = SwitchboardCore.Environment(
-                        name: name,
-                        templateID: template.id,
-                        actions: template.actions.map {
-                            ActionSpec(name: $0.name, prompt: $0.prompt, chatID: $0.chatID)
-                        },
-                        cleanup: template.cleanup?.map {
-                            ActionSpec(name: $0.name, prompt: $0.prompt, chatID: $0.chatID)
-                        }
-                    )
-                    CommandCache.copyNamespace(from: "template:\(template.name)", to: name)
+                let fresh = composeRecord(name: name, from: templateIDs)
+                if builderIsTemplate {
+                    templates.append(fresh)
+                    TemplateStore.save(templates)
+                } else {
+                    environments.append(fresh)
+                    persistEnvironments()
                 }
-                environments.append(fresh)
-                persistEnvironments()
                 return fresh
             },
             onEditTemplate: { templateID in
@@ -174,6 +155,58 @@ struct OverlayView: View {
             }
         )
         .id("\(builderIsTemplate)-\(editingEnv?.uuidString ?? "new")-\(builderName ?? "")")
+    }
+
+    /// Builds a new environment/template record from the selected templates:
+    /// their actions and cleanup are deep-copied (fresh record ids, deduped
+    /// names, duplicated chat histories, copied cached commands) so the new
+    /// record and the source templates never share mutable state.
+    private func composeRecord(name: String, from templateIDs: [UUID]) -> SwitchboardCore.Environment {
+        let selected = templateIDs.compactMap { id in templates.first { $0.id == id } }
+        let destBase = builderIsTemplate ? "template:\(name)" : name
+        var usedActionNames = Set<String>()
+        var usedCleanupNames = Set<String>()
+
+        func copySpecs(
+            _ specs: [ActionSpec], sourceBase: String, isCleanup: Bool, used: inout Set<String>
+        ) -> [ActionSpec] {
+            specs.map { spec in
+                var newName = spec.name
+                var counter = 2
+                while used.contains(newName) {
+                    newName = "\(spec.name)-\(counter)"
+                    counter += 1
+                }
+                used.insert(newName)
+
+                let copied = ActionSpec(
+                    name: newName,
+                    prompt: spec.prompt,
+                    chatID: spec.chatID.flatMap { ChatStore.duplicate($0) }
+                )
+                let sourceEnv = isCleanup ? Opener.cleanupCacheEnv(sourceBase) : sourceBase
+                if let cached = CommandCache.lookup(env: sourceEnv, action: spec) {
+                    let destEnv = isCleanup ? Opener.cleanupCacheEnv(destBase) : destBase
+                    try? CommandCache.store(env: destEnv, action: copied, commands: cached.commands)
+                }
+                return copied
+            }
+        }
+
+        var actions: [ActionSpec] = []
+        var cleanup: [ActionSpec] = []
+        for template in selected {
+            let sourceBase = "template:\(template.name)"
+            actions += copySpecs(template.actions, sourceBase: sourceBase, isCleanup: false, used: &usedActionNames)
+            cleanup += copySpecs(template.cleanup ?? [], sourceBase: sourceBase, isCleanup: true, used: &usedCleanupNames)
+        }
+
+        return SwitchboardCore.Environment(
+            name: name,
+            templateID: selected.count == 1 ? selected.first?.id : nil,
+            actions: actions,
+            cleanup: cleanup.isEmpty ? nil : cleanup
+        )
     }
 
     private func mutateActionList(
@@ -615,7 +648,7 @@ struct NewEnvironmentView: View {
     @State private var cleanups: [ActionSpec]
     @State private var editingAction: ActionSpec?
     @State private var designingCleanup = false
-    @State private var selectedTemplate: UUID?
+    @State private var selectedTemplates: Set<UUID> = []
     @Binding var chatOpen: Bool
     @StateObject private var chat = ActionChatModel()
     @FocusState private var nameFocused: Bool
@@ -628,9 +661,9 @@ struct NewEnvironmentView: View {
     let templates: [SwitchboardCore.Environment]
     /// Reports the created/loaded environment record so the header can show it.
     let onEnvReady: (SwitchboardCore.Environment) -> Void
-    /// Creates/persists the environment (from the template id, when given)
-    /// and returns its record.
-    let onCreate: (String, UUID?) -> SwitchboardCore.Environment
+    /// Creates/persists the environment (composed from the selected template
+    /// ids, when any) and returns its record.
+    let onCreate: (String, [UUID]) -> SwitchboardCore.Environment
     let onEditTemplate: (UUID) -> Void
     let onDeleteTemplate: (UUID) -> Void
     /// Persists an agreed action and its ready-made commands immediately.
@@ -645,7 +678,7 @@ struct NewEnvironmentView: View {
         addActionRequest: Int = 0,
         templates: [SwitchboardCore.Environment] = [],
         onEnvReady: @escaping (SwitchboardCore.Environment) -> Void,
-        onCreate: @escaping (String, UUID?) -> SwitchboardCore.Environment,
+        onCreate: @escaping (String, [UUID]) -> SwitchboardCore.Environment,
         onEditTemplate: @escaping (UUID) -> Void = { _ in },
         onDeleteTemplate: @escaping (UUID) -> Void = { _ in },
         onSaveAction: @escaping (UUID, ActionSpec, [String], UUID?, Bool) -> Void,
@@ -705,16 +738,18 @@ struct NewEnvironmentView: View {
 
             if !templates.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(selectedTemplateName == nil
-                        ? "Optionally start from a template"
-                        : "Starting from '\(selectedTemplateName!)' — name it and press Enter")
+                    Text(selectionCaption)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(templates) { template in
-                        let isSelected = selectedTemplate == template.id
+                        let isSelected = selectedTemplates.contains(template.id)
                         HStack(spacing: 8) {
                             Button {
-                                selectedTemplate = isSelected ? nil : template.id
+                                if isSelected {
+                                    selectedTemplates.remove(template.id)
+                                } else {
+                                    selectedTemplates.insert(template.id)
+                                }
                                 nameFocused = true
                             } label: {
                                 HStack {
@@ -740,7 +775,7 @@ struct NewEnvironmentView: View {
                             .buttonStyle(.plain)
                             .help("Edit template")
                             ConfirmActionButton(help: "Delete template") {
-                                if selectedTemplate == template.id { selectedTemplate = nil }
+                                selectedTemplates.remove(template.id)
                                 onDeleteTemplate(template.id)
                             }
                         }
@@ -762,13 +797,20 @@ struct NewEnvironmentView: View {
         .onAppear { nameFocused = true }
     }
 
-    private var selectedTemplateName: String? {
-        selectedTemplate.flatMap { id in templates.first { $0.id == id }?.name }
+    private var selectionCaption: String {
+        let picked = templates.filter { selectedTemplates.contains($0.id) }
+        guard !picked.isEmpty else {
+            return "Optionally start from templates (select any number)"
+        }
+        let names = picked.map { "'\($0.name)'" }.joined(separator: " + ")
+        return "Combining \(names) — name it and press Enter"
     }
 
     private func advance() {
         guard !trimmedName.isEmpty else { return }
-        let env = onCreate(trimmedName, selectedTemplate)
+        // Preserve list order for the combined actions.
+        let ordered = templates.filter { selectedTemplates.contains($0.id) }.map(\.id)
+        let env = onCreate(trimmedName, ordered)
         envID = env.id
         actions = env.actions
         cleanups = env.cleanup ?? []

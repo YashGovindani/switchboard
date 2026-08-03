@@ -103,6 +103,16 @@ public enum ChatStore {
         JSONFile.read(ChatRecord.self, at: url(for: id))
     }
 
+    /// Copies a chat record under a fresh id (used when instantiating from
+    /// templates, so the copy's future edits never touch the original).
+    public static func duplicate(_ id: UUID) -> UUID? {
+        guard let source = load(id) else { return nil }
+        let newID = UUID()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        JSONFile.write(ChatRecord(id: newID, messages: source.messages, updatedAt: Date()), to: url(for: newID))
+        return newID
+    }
+
     /// Appends a session's messages to the chat record, creating it if new.
     public static func append(_ id: UUID, messages: [ChatMessage]) {
         guard !messages.isEmpty else { return }
