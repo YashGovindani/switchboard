@@ -20,6 +20,7 @@ struct OverlayView: View {
     @State private var errorMessage: String?
     @State private var query = ""
     @State private var selected = 0
+    @StateObject private var previews = PreviewLoader()
     @FocusState private var searchFocused: Bool
 
     let onOpen: (SwitchboardCore.Environment) -> Void
@@ -302,7 +303,10 @@ struct OverlayView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .onAppear { searchFocused = true }
+            .onAppear {
+                searchFocused = true
+                previews.refresh(environments)
+            }
             .onChange(of: query) { _ in selected = 0 }
 
             Divider()
@@ -319,6 +323,8 @@ struct OverlayView: View {
                             ForEach(Array(filtered.enumerated()), id: \.element.id) { index, env in
                                 EnvironmentRow(
                                     env: env,
+                                    liveWindows: previews.live[env.id] ?? [],
+                                    thumbnails: previews.thumbnails,
                                     isSelected: index == selected,
                                     action: {
                                         onOpen(env)
@@ -436,6 +442,8 @@ struct ConfirmActionButton: View {
 
 struct EnvironmentRow: View {
     let env: SwitchboardCore.Environment
+    let liveWindows: [SwitchboardCore.WindowRef]
+    let thumbnails: [UInt32: NSImage]
     let isSelected: Bool
     let action: () -> Void
     let onFinish: () -> Void
@@ -446,9 +454,18 @@ struct EnvironmentRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Button(action: action) {
-                HStack {
+                HStack(spacing: 10) {
+                    WindowPreviewBox(refs: liveWindows, thumbnails: thumbnails)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(env.name).font(.system(size: 14, weight: .medium))
+                        HStack(spacing: 6) {
+                            Text(env.name).font(.system(size: 14, weight: .medium))
+                            if !liveWindows.isEmpty {
+                                Circle().fill(.green).frame(width: 6, height: 6)
+                                Text("\(liveWindows.count) window\(liveWindows.count == 1 ? "" : "s")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Text(env.actions.map(\.name).joined(separator: " · "))
                             .font(.caption)
                             .foregroundStyle(.secondary)
