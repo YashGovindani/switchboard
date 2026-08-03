@@ -10,6 +10,7 @@ struct OverlayView: View {
     @State private var environments: [SwitchboardCore.Environment]
     @State private var templates: [SwitchboardCore.Environment]
     @State private var creating = false
+    @State private var builderIsTemplate = false
     @State private var editingEnv: UUID?
     @State private var builderName: String?
     @State private var renaming = false
@@ -80,14 +81,24 @@ struct OverlayView: View {
     private var builder: some View {
         NewEnvironmentView(
             chatOpen: $chatOpen,
-            initialEnv: environments.first { $0.id == editingEnv },
+            isTemplate: builderIsTemplate,
+            initialEnv: (builderIsTemplate ? templates : environments).first { $0.id == editingEnv },
             addActionRequest: addActionRequest,
-            templates: templates,
+            templates: builderIsTemplate ? [] : templates,
             onEnvReady: { env in
                 withAnimation(.easeInOut(duration: 0.28)) { builderName = env.name }
                 editingEnv = env.id
             },
             onCreate: { name, templateID in
+                if builderIsTemplate {
+                    if let existing = templates.first(where: { $0.name == name }) {
+                        return existing
+                    }
+                    let fresh = SwitchboardCore.Environment(name: name, actions: [])
+                    templates.append(fresh)
+                    TemplateStore.save(templates)
+                    return fresh
+                }
                 if let existing = environments.first(where: { $0.name == name }) {
                     return existing
                 }
@@ -112,6 +123,11 @@ struct OverlayView: View {
                 persistEnvironments()
                 return fresh
             },
+            onEditTemplate: { templateID in
+                builderIsTemplate = true
+                editingEnv = templateID
+                builderName = templates.first { $0.id == templateID }?.name
+            },
             onDeleteTemplate: { templateID in
                 if let template = templates.first(where: { $0.id == templateID }) {
                     CommandCache.removeAll(env: "template:\(template.name)")
@@ -120,21 +136,17 @@ struct OverlayView: View {
                 TemplateStore.save(templates)
             },
             onSaveAction: { envID, action, commands, replacingID, isCleanup in
-                guard let i = environments.firstIndex(where: { $0.id == envID }) else { return }
-                if isCleanup {
-                    var cleanup = environments[i].cleanup ?? []
-                    if let replacingID, let j = cleanup.firstIndex(where: { $0.id == replacingID }) {
-                        cleanup[j] = action
-                    } else {
-                        cleanup.append(action)
-                    }
-                    environments[i].cleanup = cleanup
-                } else if let replacingID,
-                          let j = environments[i].actions.firstIndex(where: { $0.id == replacingID }) {
-                    environments[i].actions[j] = action
-                } else {
-                    environments[i].actions.append(action)
+                if builderIsTemplate {
+                    guard let i = templates.firstIndex(where: { $0.id == envID }) else { return }
+                    mutateActionList(&templates[i], action: action, replacingID: replacingID, isCleanup: isCleanup)
+                    TemplateStore.save(templates)
+                    let base = "template:\(templates[i].name)"
+                    let cacheEnv = isCleanup ? Opener.cleanupCacheEnv(base) : base
+                    try? CommandCache.store(env: cacheEnv, action: action, commands: commands)
+                    return
                 }
+                guard let i = environments.firstIndex(where: { $0.id == envID }) else { return }
+                mutateActionList(&environments[i], action: action, replacingID: replacingID, isCleanup: isCleanup)
                 persistEnvironments()
                 // The chat already produced the commands — cache them so
                 // opening/finishing never needs a re-translation.
@@ -142,6 +154,16 @@ struct OverlayView: View {
                 try? CommandCache.store(env: cacheEnv, action: action, commands: commands)
             },
             onRemoveAction: { envID, actionID, isCleanup in
+                if builderIsTemplate {
+                    guard let i = templates.firstIndex(where: { $0.id == envID }) else { return }
+                    if isCleanup {
+                        templates[i].cleanup?.removeAll { $0.id == actionID }
+                    } else {
+                        templates[i].actions.removeAll { $0.id == actionID }
+                    }
+                    TemplateStore.save(templates)
+                    return
+                }
                 guard let i = environments.firstIndex(where: { $0.id == envID }) else { return }
                 if isCleanup {
                     environments[i].cleanup?.removeAll { $0.id == actionID }
@@ -151,7 +173,29 @@ struct OverlayView: View {
                 persistEnvironments()
             }
         )
-        .id("\(editingEnv?.uuidString ?? "new")-\(builderName ?? "")")
+        .id("\(builderIsTemplate)-\(editingEnv?.uuidString ?? "new")-\(builderName ?? "")")
+    }
+
+    private func mutateActionList(
+        _ record: inout SwitchboardCore.Environment,
+        action: ActionSpec,
+        replacingID: UUID?,
+        isCleanup: Bool
+    ) {
+        if isCleanup {
+            var cleanup = record.cleanup ?? []
+            if let replacingID, let j = cleanup.firstIndex(where: { $0.id == replacingID }) {
+                cleanup[j] = action
+            } else {
+                cleanup.append(action)
+            }
+            record.cleanup = cleanup
+        } else if let replacingID,
+                  let j = record.actions.firstIndex(where: { $0.id == replacingID }) {
+            record.actions[j] = action
+        } else {
+            record.actions.append(action)
+        }
     }
 
     /// Always-visible top bar: back chevron while creating, otherwise the
@@ -162,6 +206,7 @@ struct OverlayView: View {
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         creating = false
+                        builderIsTemplate = false
                         chatOpen = false
                         builderName = nil
                         editingEnv = nil
@@ -188,8 +233,17 @@ struct OverlayView: View {
                 .buttonStyle(.plain)
                 .help("Cancel rename")
             } else {
-                Text(creating ? (builderName ?? "New Environment") : "Switchboard")
+                Text(creating
+                    ? (builderName ?? (builderIsTemplate ? "New Template" : "New Environment"))
+                    : "Switchboard")
                     .font(.headline)
+                if creating, builderIsTemplate {
+                    Text("template")
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                }
                 if creating, let builderName {
                     Button {
                         renameText = builderName
@@ -204,14 +258,16 @@ struct OverlayView: View {
             Spacer()
             if creating {
                 if builderName != nil {
-                    Button {
-                        saveTemplate()
-                    } label: {
-                        Image(systemName: templateSaved ? "checkmark.circle.fill" : "square.on.square")
-                            .foregroundStyle(templateSaved ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                    if !builderIsTemplate {
+                        Button {
+                            saveTemplate()
+                        } label: {
+                            Image(systemName: templateSaved ? "checkmark.circle.fill" : "square.on.square")
+                                .foregroundStyle(templateSaved ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Save this environment's actions as a template")
                     }
-                    .buttonStyle(.plain)
-                    .help("Save this environment's actions as a template")
                     Button {
                         addActionRequest += 1
                     } label: {
@@ -222,6 +278,16 @@ struct OverlayView: View {
             } else {
                 Button {
                     editingEnv = nil
+                    builderName = nil
+                    builderIsTemplate = true
+                    creating = true
+                } label: {
+                    Label("New Template", systemImage: "square.on.square")
+                }
+                Button {
+                    editingEnv = nil
+                    builderName = nil
+                    builderIsTemplate = false
                     creating = true
                 } label: {
                     Label("New Environment", systemImage: "plus")
@@ -256,10 +322,32 @@ struct OverlayView: View {
 
     private func commitRename() {
         let new = renameText.trimmingCharacters(in: .whitespaces)
-        guard let envID = editingEnv,
-              let i = environments.firstIndex(where: { $0.id == envID }),
-              !new.isEmpty
-        else {
+        guard let envID = editingEnv, !new.isEmpty else {
+            renaming = false
+            return
+        }
+        if builderIsTemplate {
+            guard let i = templates.firstIndex(where: { $0.id == envID }) else {
+                renaming = false
+                return
+            }
+            let old = templates[i].name
+            guard new != old else {
+                renaming = false
+                return
+            }
+            guard !templates.contains(where: { $0.name == new }) else {
+                errorMessage = "A template named '\(new)' already exists."
+                return
+            }
+            templates[i].name = new
+            TemplateStore.save(templates)
+            CommandCache.renameEnv("template:\(old)", to: "template:\(new)")
+            builderName = new
+            renaming = false
+            return
+        }
+        guard let i = environments.firstIndex(where: { $0.id == envID }) else {
             renaming = false
             return
         }
@@ -532,6 +620,8 @@ struct NewEnvironmentView: View {
     @StateObject private var chat = ActionChatModel()
     @FocusState private var nameFocused: Bool
 
+    /// When true, the builder edits a template record instead of an environment.
+    let isTemplate: Bool
     /// Incremented by the header's Add action button; observed to open the chat.
     let addActionRequest: Int
     /// Saved templates offered on the name screen.
@@ -541,6 +631,7 @@ struct NewEnvironmentView: View {
     /// Creates/persists the environment (from the template id, when given)
     /// and returns its record.
     let onCreate: (String, UUID?) -> SwitchboardCore.Environment
+    let onEditTemplate: (UUID) -> Void
     let onDeleteTemplate: (UUID) -> Void
     /// Persists an agreed action and its ready-made commands immediately.
     /// `replacing` is the id of the action being replaced on edit.
@@ -549,11 +640,13 @@ struct NewEnvironmentView: View {
 
     init(
         chatOpen: Binding<Bool>,
+        isTemplate: Bool = false,
         initialEnv: SwitchboardCore.Environment? = nil,
         addActionRequest: Int = 0,
         templates: [SwitchboardCore.Environment] = [],
         onEnvReady: @escaping (SwitchboardCore.Environment) -> Void,
         onCreate: @escaping (String, UUID?) -> SwitchboardCore.Environment,
+        onEditTemplate: @escaping (UUID) -> Void = { _ in },
         onDeleteTemplate: @escaping (UUID) -> Void = { _ in },
         onSaveAction: @escaping (UUID, ActionSpec, [String], UUID?, Bool) -> Void,
         onRemoveAction: @escaping (UUID, UUID, Bool) -> Void
@@ -564,10 +657,12 @@ struct NewEnvironmentView: View {
         _envID = State(initialValue: initialEnv?.id)
         _actions = State(initialValue: initialEnv?.actions ?? [])
         _cleanups = State(initialValue: initialEnv?.cleanup ?? [])
+        self.isTemplate = isTemplate
         self.addActionRequest = addActionRequest
         self.templates = templates
         self.onEnvReady = onEnvReady
         self.onCreate = onCreate
+        self.onEditTemplate = onEditTemplate
         self.onDeleteTemplate = onDeleteTemplate
         self.onSaveAction = onSaveAction
         self.onRemoveAction = onRemoveAction
@@ -587,7 +682,7 @@ struct NewEnvironmentView: View {
     private var askNameView: some View {
         VStack(spacing: 0) {
             Spacer()
-            TextField("Environment name", text: $name)
+            TextField(isTemplate ? "Template name" : "Environment name", text: $name)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused($nameFocused)
@@ -637,6 +732,13 @@ struct NewEnvironmentView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            Button {
+                                onEditTemplate(template.id)
+                            } label: {
+                                Image(systemName: "pencil").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Edit template")
                             ConfirmActionButton(help: "Delete template") {
                                 if selectedTemplate == template.id { selectedTemplate = nil }
                                 onDeleteTemplate(template.id)
@@ -875,7 +977,8 @@ struct NewEnvironmentView: View {
             chat.preload(record.messages)
         }
 
-        let cacheEnv = isCleanup ? Opener.cleanupCacheEnv(trimmedName) : trimmedName
+        let base = isTemplate ? "template:\(trimmedName)" : trimmedName
+        let cacheEnv = isCleanup ? Opener.cleanupCacheEnv(base) : base
         let cached = CommandCache.lookup(env: cacheEnv, action: action)
         var context = """
         The user is EDITING an existing \(isCleanup ? "CLEANUP " : "")action rather than creating a new one.
