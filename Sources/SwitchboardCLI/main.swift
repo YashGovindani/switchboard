@@ -14,27 +14,27 @@ func usage() {
       switchboard show <env>               Show the cached commands for an environment
       switchboard refresh <env> [action]   Regenerate commands from prompts (all actions, or one)
 
-    Config: ~/.config/switchboard/config.json
-    Cache:  ~/.config/switchboard/cache.json
+    Stores: ~/.config/switchboard/ (environments.json, templates.json, settings.json, chats/, cache.json)
     """)
 }
 
-func findEnvironment(_ name: String, in config: Config) -> Environment? {
-    config.environments.first { $0.name == name }
+func findEnvironment(_ name: String, in environments: [Environment]) -> Environment? {
+    environments.first { $0.name == name }
 }
 
 do {
-    let config = try ConfigStore.load()
+    Migration.run()
+    let environments = EnvironmentStore.load()
 
     switch arguments.first {
     case "list":
-        for env in config.environments {
+        for env in environments {
             print("\(env.name)  (\(env.actions.count) actions)")
         }
 
     case "open":
         guard arguments.count == 2 else { usage(); exit(1) }
-        guard let env = findEnvironment(arguments[1], in: config) else {
+        guard let env = findEnvironment(arguments[1], in: environments) else {
             print("No environment named '\(arguments[1])'. Run `switchboard list`.")
             exit(1)
         }
@@ -45,7 +45,7 @@ do {
 
     case "finish":
         guard arguments.count == 2 else { usage(); exit(1) }
-        guard let env = findEnvironment(arguments[1], in: config) else {
+        guard let env = findEnvironment(arguments[1], in: environments) else {
             print("No environment named '\(arguments[1])'.")
             exit(1)
         }
@@ -60,7 +60,7 @@ do {
 
     case "show":
         guard arguments.count == 2 else { usage(); exit(1) }
-        guard let env = findEnvironment(arguments[1], in: config) else {
+        guard let env = findEnvironment(arguments[1], in: environments) else {
             print("No environment named '\(arguments[1])'.")
             exit(1)
         }
@@ -84,7 +84,7 @@ do {
 
     case "refresh":
         guard arguments.count >= 2 else { usage(); exit(1) }
-        guard let env = findEnvironment(arguments[1], in: config) else {
+        guard let env = findEnvironment(arguments[1], in: environments) else {
             print("No environment named '\(arguments[1])'.")
             exit(1)
         }

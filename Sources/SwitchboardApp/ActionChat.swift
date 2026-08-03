@@ -21,12 +21,14 @@ final class ActionChatModel: ObservableObject {
     private var session = ClaudeStreamSession()
     private var instructionSent = false
     private var pendingContext: String?
+    private var preloadedCount = 0
 
     func reset() {
         session.close()
         session = ClaudeStreamSession()
         instructionSent = false
         pendingContext = nil
+        preloadedCount = 0
         messages = []
         pending = false
         partial = ""
@@ -37,6 +39,23 @@ final class ActionChatModel: ObservableObject {
     /// claude along with the user's first message.
     func prepare(context: String) {
         pendingContext = context
+    }
+
+    /// Shows a stored conversation (from the action's chat record) above the
+    /// new session's messages.
+    func preload(_ history: [SwitchboardCore.ChatMessage]) {
+        messages = history.map {
+            Message(role: $0.role == "user" ? .user : .assistant, text: $0.text)
+        }
+        preloadedCount = messages.count
+    }
+
+    /// The messages produced by this session (excludes preloaded history),
+    /// ready for the chat store.
+    func newTranscript() -> [SwitchboardCore.ChatMessage] {
+        messages.dropFirst(preloadedCount).map {
+            SwitchboardCore.ChatMessage(role: $0.role == .user ? "user" : "assistant", text: $0.text)
+        }
     }
 
     func send(_ text: String) {

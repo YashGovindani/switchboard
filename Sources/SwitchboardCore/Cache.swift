@@ -11,7 +11,7 @@ public struct CachedAction: Codable {
 /// Cache keyed by "<environment>/<action>". A cached entry is valid only
 /// while the prompt's hash matches, so editing a prompt regenerates it.
 public enum CommandCache {
-    public static let url = ConfigStore.dir.appendingPathComponent("cache.json")
+    public static let url = StoreDir.url.appendingPathComponent("cache.json")
 
     static func hash(of prompt: String) -> String {
         SHA256.hash(data: Data(prompt.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -25,7 +25,7 @@ public enum CommandCache {
     }
 
     static func save(_ cache: [String: CachedAction]) throws {
-        try FileManager.default.createDirectory(at: ConfigStore.dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: StoreDir.url, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(cache).write(to: url)

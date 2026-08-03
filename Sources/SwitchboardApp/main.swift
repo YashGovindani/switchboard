@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
     private var panel: OverlayPanel?
-    private var activeEnv: String?
+    private var activeEnv: UUID?
     private var showMenuItem: NSMenuItem?
     private var loginMenuItem: NSMenuItem?
     private var recorderWindow: NSWindow?
@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        Migration.run()
         installEditMenu()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -39,8 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
 
-        let hotkeyConfig = (try? ConfigStore.load())?.hotkey ?? .optionSpace
-        applyHotKey(hotkeyConfig)
+        applyHotKey(SettingsStore.load().hotkey ?? .optionSpace)
 
         NotificationCenter.default.addObserver(
             forName: .switchboardPanelResize, object: nil, queue: .main
@@ -75,9 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showOverlay() {
-        let config = (try? ConfigStore.load()) ?? Config(environments: [])
         let view = OverlayView(
-            config: config,
+            environments: EnvironmentStore.load(),
+            templates: TemplateStore.load(),
             onOpen: { [weak self] (env: SwitchboardCore.Environment) in self?.openEnvironment(env) },
             onFinish: { [weak self] (env: SwitchboardCore.Environment) in self?.finishEnvironment(env) },
             onDismiss: { [weak self] in self?.panel?.orderOut(nil) }
@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openEnvironment(_ env: SwitchboardCore.Environment) {
         let previous = activeEnv
-        activeEnv = env.name
+        activeEnv = env.id
         opening += 1
 
         // First switch triggers the one-time Accessibility prompt; without
@@ -105,11 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Hide the environment we're leaving (fullscreen windows stay
             // parked on their own Spaces and are skipped).
-            if let previous, previous != env.name {
+            if let previous, previous != env.id {
                 tracker.minimizeNonFullscreen(previous)
             }
 
-            if tracker.focus(env.name) {
+            if tracker.focus(env.id) {
                 // Already open — focused its windows instead of re-running.
                 DispatchQueue.main.async { self?.opening -= 1 }
                 return
@@ -121,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let before = tracker.snapshot()
             let ok = Opener.open(env) { NSLog("switchboard: %@", $0) }
             let created = tracker.attributeNewWindows(
-                to: env.name, since: before, expecting: env.actions.count
+                to: env.id, since: before, expecting: env.actions.count
             )
             tracker.makeFullscreen(created)
 
@@ -141,9 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowTracker.ensureAccessibility()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let ok = Opener.finish(env) { NSLog("switchboard: %@", $0) }
-            WindowTracker.shared.closeWindows(of: env.name)
+            WindowTracker.shared.closeWindows(of: env.id)
             DispatchQueue.main.async {
-                if self?.activeEnv == env.name { self?.activeEnv = nil }
+                if self?.activeEnv == env.id { self?.activeEnv = nil }
                 self?.opening -= 1
                 if !ok {
                     self?.showError("Some cleanup actions of '\(env.name)' failed. Run `switchboard finish \(env.name)` in a terminal for details.")
@@ -202,10 +202,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             self.closeRecorder()
             self.applyHotKey(config)
-            if var stored = try? ConfigStore.load() {
-                stored.hotkey = config
-                try? ConfigStore.save(stored)
-            }
+            var settings = SettingsStore.load()
+            settings.hotkey = config
+            SettingsStore.save(settings)
             return nil
         }
     }
@@ -295,8 +294,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openConfig() {
-        _ = try? ConfigStore.load() // ensures the sample exists
-        NSWorkspace.shared.open(ConfigStore.configURL)
+        Migration.run() // ensures the stores exist
+        NSWorkspace.shared.open(StoreDir.url)
     }
 
     @objc private func quit() {

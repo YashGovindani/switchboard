@@ -70,26 +70,32 @@ switchboard show <env>               # show each action's prompt and its cached 
 switchboard refresh <env> [action]   # force re-translation of prompts (all actions, or one)
 ```
 
-## Configuration
+## Storage
 
-`~/.config/switchboard/config.json` (a sample is created on first run):
+Everything lives as plain JSON under `~/.config/switchboard/`, split by concern, with UUID-linked records (no indexes, no database):
+
+| File | Contents |
+|---|---|
+| `environments.json` | Active environments: `id`, `name`, `templateID` link, actions (each with `id` and a `chatID` link), and the tracked `windows` (window-server id, pid, app) used for switching |
+| `templates.json` | Saved templates — same record shape as environments |
+| `chats/<uuid>.json` | One design conversation per file, linked from actions via `chatID`; edit sessions append |
+| `settings.json` | App settings (hotkey) |
+| `cache.json` | Prompt → approved-command cache, keyed by a hash of each prompt |
 
 ```json
+// environments.json (one record)
 {
-  "environments": [
-    {
-      "name": "myproject-featureX",
-      "actions": [
-        { "name": "browser",  "prompt": "Open a new Chrome window with localhost:5174" },
-        { "name": "editor",   "prompt": "Open VS Code at ~/work/myproject" },
-        { "name": "terminal", "prompt": "Open an iTerm window in ~/work/myproject and run npm run dev" }
-      ]
-    }
-  ]
+  "id": "0B7…",
+  "name": "myproject-featureX",
+  "templateID": "9A1…",
+  "actions": [
+    { "id": "F3C…", "name": "browser", "prompt": "Open a new Chrome window with localhost:5174", "chatID": "6D2…" }
+  ],
+  "windows": [{ "windowID": 3748, "pid": 618, "appName": "Google Chrome" }]
 }
 ```
 
-Generated commands are cached in `~/.config/switchboard/cache.json`, keyed by a hash of each prompt. Inspect them any time with `switchboard show <env>` — you always get to see exactly what will run.
+Configs from older versions (single `config.json` + `state.json`) migrate automatically on first launch; the originals are kept as `.bak`. Inspect cached commands any time with `switchboard show <env>` — you always get to see exactly what will run.
 
 ## Features
 
@@ -113,3 +119,4 @@ Generated commands are cached in `~/.config/switchboard/cache.json`, keyed by a 
 - [x] **Phase 4 — Lifecycle**: per-environment cleanup actions and "Finish task" (cleanup + close windows) in app and CLI
 - [x] **Phase 5 — Settings & polish**: type-to-filter with keyboard navigation, environment rename, recordable global shortcut, start at login
 - [x] **Phase 6 — Templates**: save an environment's init/cleanup behaviour, create pre-filled environments from it
+- [x] **Phase 7 — Split stores**: per-concern JSON files with UUID-linked records; per-action chat history persisted and reloaded on edit

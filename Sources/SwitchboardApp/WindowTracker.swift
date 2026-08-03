@@ -9,26 +9,16 @@ import SwitchboardCore
 @discardableResult
 func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: inout CGWindowID) -> AXError
 
-struct TrackedWindow: Codable, Hashable {
-    let windowID: CGWindowID
-    let pid: pid_t
-    let appName: String
-}
-
 /// Knows which on-screen windows belong to which environment.
 ///
 /// Attribution is by diffing the CG window list around an environment's
 /// actions; focus/minimize goes through the Accessibility API (one-time
-/// permission). State persists across app restarts and is validated against
-/// the live window list on every use.
+/// permission). Window records live on the environment records themselves
+/// (environments.json, via EnvironmentStore), keyed by the environment's id.
 final class WindowTracker {
     static let shared = WindowTracker()
 
-    private let lock = NSLock()
-    private var windowsByEnv: [String: [TrackedWindow]] = [:]
-    private let stateURL = ConfigStore.dir.appendingPathComponent("state.json")
-
-    private init() { load() }
+    private init() {}
 
     // MARK: Window list
 
@@ -70,113 +60,57 @@ final class WindowTracker {
         NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular
     }
 
-    /// Watches for windows that appeared since `before` and records them as
-    /// belonging to `env`. Blocks its (background) thread while polling —
+    /// Watches for windows that appeared since `before` and records them on
+    /// the environment record. Blocks its (background) thread while polling —
     /// apps like Chrome and VS Code take a few seconds to create windows.
     /// `expecting` is the number of windows the environment's actions should
     /// produce (one per action); once reached, polling ends early instead of
     /// waiting out the full deadline. Returns the windows it attributed.
     @discardableResult
     func attributeNewWindows(
-        to env: String,
+        to envID: UUID,
         since before: Set<CGWindowID>,
         expecting: Int = .max,
         pollFor seconds: TimeInterval = 8
-    ) -> [TrackedWindow] {
-        var discovered: [TrackedWindow] = []
+    ) -> [SwitchboardCore.WindowRef] {
+        var discovered: [SwitchboardCore.WindowRef] = []
         var policyByPid: [pid_t: Bool] = [:]
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline, discovered.count < expecting {
             Thread.sleep(forTimeInterval: 0.5)
             let current = currentWindows()
-            let newIDs = Set(current.keys).subtracting(before).subtracting(discovered.map(\.windowID))
+            let newIDs = Set(current.keys).subtracting(before)
+                .subtracting(discovered.map { CGWindowID($0.windowID) })
             for id in newIDs {
                 guard let info = current[id] else { continue }
                 guard !Self.ignoredApps.contains(info.appName) else { continue }
                 let regular = policyByPid[info.pid] ?? isRegularApp(info.pid)
                 policyByPid[info.pid] = regular
                 guard regular else { continue }
-                discovered.append(TrackedWindow(windowID: id, pid: info.pid, appName: info.appName))
+                discovered.append(SwitchboardCore.WindowRef(windowID: UInt32(id), pid: Int32(info.pid), appName: info.appName))
             }
         }
         guard !discovered.isEmpty else { return [] }
 
-        lock.lock()
-        let stillLive = liveWindowsLocked(for: env)
-        windowsByEnv[env] = stillLive + discovered.filter { !stillLive.contains($0) }
-        saveLocked()
-        lock.unlock()
-        NSLog("switchboard: tracked %d window(s) for '%@'", discovered.count, env)
-        return discovered
-    }
-
-    /// Puts each window into native fullscreen (its own Space); macOS queues
-    /// the Space transitions itself.
-    func makeFullscreen(_ windows: [TrackedWindow]) {
-        guard AXIsProcessTrusted() else { return }
-        for tracked in windows {
-            for axWindow in axWindows(of: tracked.pid) {
-                var id: CGWindowID = 0
-                guard _AXUIElementGetWindow(axWindow, &id) == .success, id == tracked.windowID else { continue }
-
-                var fullscreen: CFTypeRef?
-                AXUIElementCopyAttributeValue(axWindow, "AXFullScreen" as CFString, &fullscreen)
-                if (fullscreen as? Bool) != true {
-                    AXUIElementSetAttributeValue(axWindow, "AXFullScreen" as CFString, kCFBooleanTrue)
-                }
-                break
-            }
+        EnvironmentStore.update(envID) { env in
+            let live = self.filterLive(env.windows)
+            env.windows = live + discovered.filter { !live.contains($0) }
         }
+        NSLog("switchboard: tracked %d window(s) for env %@", discovered.count, envID.uuidString)
+        return discovered
     }
 
     // MARK: Queries
 
-    /// Tracked windows of `env` that still exist on screen.
-    func liveWindows(for env: String) -> [TrackedWindow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return liveWindowsLocked(for: env)
+    /// The environment's tracked windows that still exist on screen.
+    func liveWindows(for envID: UUID) -> [SwitchboardCore.WindowRef] {
+        filterLive(EnvironmentStore.find(envID)?.windows)
     }
 
-    private func liveWindowsLocked(for env: String) -> [TrackedWindow] {
+    private func filterLive(_ refs: [SwitchboardCore.WindowRef]?) -> [SwitchboardCore.WindowRef] {
+        guard let refs, !refs.isEmpty else { return [] }
         let current = currentWindows()
-        return (windowsByEnv[env] ?? []).filter { current[$0.windowID] != nil }
-    }
-
-    func forget(env: String) {
-        lock.lock()
-        windowsByEnv[env] = nil
-        saveLocked()
-        lock.unlock()
-    }
-
-    func rename(env old: String, to new: String) {
-        lock.lock()
-        if let windows = windowsByEnv.removeValue(forKey: old) {
-            windowsByEnv[new] = windows
-        }
-        saveLocked()
-        lock.unlock()
-    }
-
-    /// Closes the environment's live windows (presses each AX close button)
-    /// and forgets its tracking. Part of "Finish task".
-    func closeWindows(of env: String) {
-        if AXIsProcessTrusted() {
-            for tracked in liveWindows(for: env) {
-                for axWindow in axWindows(of: tracked.pid) {
-                    var id: CGWindowID = 0
-                    guard _AXUIElementGetWindow(axWindow, &id) == .success, id == tracked.windowID else { continue }
-                    var button: CFTypeRef?
-                    AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &button)
-                    if let button, CFGetTypeID(button) == AXUIElementGetTypeID() {
-                        AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
-                    }
-                    break
-                }
-            }
-        }
-        forget(env: env)
+        return refs.filter { current[CGWindowID($0.windowID)] != nil }
     }
 
     // MARK: Accessibility actions
@@ -195,16 +129,16 @@ final class WindowTracker {
 
     /// Raises and focuses the environment's live windows. Returns false when
     /// there is nothing to focus (caller should run the actions instead).
-    func focus(_ env: String) -> Bool {
-        let live = liveWindows(for: env)
+    func focus(_ envID: UUID) -> Bool {
+        let live = liveWindows(for: envID)
         guard !live.isEmpty else { return false }
 
         let trusted = AXIsProcessTrusted()
         let byPid = Dictionary(grouping: live, by: \.pid)
         for (pid, windows) in byPid {
             if trusted {
-                let targetIDs = Set(windows.map(\.windowID))
-                for axWindow in axWindows(of: pid) {
+                let targetIDs = Set(windows.map { CGWindowID($0.windowID) })
+                for axWindow in axWindows(of: pid_t(pid)) {
                     var id: CGWindowID = 0
                     guard _AXUIElementGetWindow(axWindow, &id) == .success, targetIDs.contains(id) else { continue }
                     AXUIElementSetAttributeValue(axWindow, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
@@ -213,20 +147,20 @@ final class WindowTracker {
             }
             // Bring the app forward either way; without AX this at least
             // surfaces the app's windows.
-            NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+            NSRunningApplication(processIdentifier: pid_t(pid))?.activate(options: [])
         }
         return true
     }
 
     /// Minimizes the environment's live windows — except fullscreen ones,
     /// which live on their own Space and are already out of the way.
-    func minimizeNonFullscreen(_ env: String) {
+    func minimizeNonFullscreen(_ envID: UUID) {
         guard AXIsProcessTrusted() else { return }
-        let live = liveWindows(for: env)
+        let live = liveWindows(for: envID)
         let byPid = Dictionary(grouping: live, by: \.pid)
         for (pid, windows) in byPid {
-            let targetIDs = Set(windows.map(\.windowID))
-            for axWindow in axWindows(of: pid) {
+            let targetIDs = Set(windows.map { CGWindowID($0.windowID) })
+            for axWindow in axWindows(of: pid_t(pid)) {
                 var id: CGWindowID = 0
                 guard _AXUIElementGetWindow(axWindow, &id) == .success, targetIDs.contains(id) else { continue }
 
@@ -239,25 +173,49 @@ final class WindowTracker {
         }
     }
 
+    /// Puts each window into native fullscreen (its own Space); macOS queues
+    /// the Space transitions itself.
+    func makeFullscreen(_ windows: [SwitchboardCore.WindowRef]) {
+        guard AXIsProcessTrusted() else { return }
+        for tracked in windows {
+            for axWindow in axWindows(of: pid_t(tracked.pid)) {
+                var id: CGWindowID = 0
+                guard _AXUIElementGetWindow(axWindow, &id) == .success, id == CGWindowID(tracked.windowID) else { continue }
+
+                var fullscreen: CFTypeRef?
+                AXUIElementCopyAttributeValue(axWindow, "AXFullScreen" as CFString, &fullscreen)
+                if (fullscreen as? Bool) != true {
+                    AXUIElementSetAttributeValue(axWindow, "AXFullScreen" as CFString, kCFBooleanTrue)
+                }
+                break
+            }
+        }
+    }
+
+    /// Closes the environment's live windows (presses each AX close button)
+    /// and clears its window records. Part of "Finish task".
+    func closeWindows(of envID: UUID) {
+        if AXIsProcessTrusted() {
+            for tracked in liveWindows(for: envID) {
+                for axWindow in axWindows(of: pid_t(tracked.pid)) {
+                    var id: CGWindowID = 0
+                    guard _AXUIElementGetWindow(axWindow, &id) == .success, id == CGWindowID(tracked.windowID) else { continue }
+                    var button: CFTypeRef?
+                    AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &button)
+                    if let button, CFGetTypeID(button) == AXUIElementGetTypeID() {
+                        AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+                    }
+                    break
+                }
+            }
+        }
+        EnvironmentStore.update(envID) { $0.windows = nil }
+    }
+
     private func axWindows(of pid: pid_t) -> [AXUIElement] {
         let app = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
         AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
         return value as? [AXUIElement] ?? []
-    }
-
-    // MARK: Persistence
-
-    private func load() {
-        guard let data = try? Data(contentsOf: stateURL),
-              let stored = try? JSONDecoder().decode([String: [TrackedWindow]].self, from: data)
-        else { return }
-        windowsByEnv = stored
-    }
-
-    private func saveLocked() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? encoder.encode(windowsByEnv).write(to: stateURL)
     }
 }
