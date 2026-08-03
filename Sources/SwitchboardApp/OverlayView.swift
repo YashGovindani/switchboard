@@ -649,6 +649,16 @@ struct NewEnvironmentView: View {
     @State private var editingAction: ActionSpec?
     @State private var designingCleanup = false
     @State private var selectedTemplates: Set<UUID> = []
+
+    /// Inline name/commands editor state for one action row.
+    struct CommandEditorState {
+        var action: ActionSpec
+        var isCleanup: Bool
+        var name: String
+        var commands: [String]
+    }
+
+    @State private var commandEditor: CommandEditorState?
     @Binding var chatOpen: Bool
     @StateObject private var chat = ActionChatModel()
     @FocusState private var nameFocused: Bool
@@ -890,39 +900,150 @@ struct NewEnvironmentView: View {
     }
 
     private func row(_ action: ActionSpec, isCleanup: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(action.name).font(.system(size: 13, weight: .medium))
-                Text(action.prompt)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            Spacer()
-            CopyButton(text: action.prompt, help: "Copy action description")
-            Button {
-                startEditing(action, isCleanup: isCleanup)
-            } label: {
-                Image(systemName: "pencil")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Edit this action with Claude")
-            ConfirmActionButton(help: "Delete action") {
-                guard let envID else { return }
-                withAnimation(.easeInOut(duration: 0.28)) {
-                    if isCleanup {
-                        cleanups.removeAll { $0.id == action.id }
-                    } else {
-                        actions.removeAll { $0.id == action.id }
-                    }
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(action.name).font(.system(size: 13, weight: .medium))
+                    Text(action.prompt)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
-                onRemoveAction(envID, action.id, isCleanup)
+                Spacer()
+                CopyButton(text: action.prompt, help: "Copy action description")
+                Button {
+                    toggleCommandEditor(action, isCleanup: isCleanup)
+                } label: {
+                    Image(systemName: "terminal")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(commandEditor?.action.id == action.id ? .primary : .secondary)
+                .help("Edit name & command steps directly")
+                Button {
+                    startEditing(action, isCleanup: isCleanup)
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Edit this action with Claude")
+                ConfirmActionButton(help: "Delete action") {
+                    guard let envID else { return }
+                    withAnimation(.easeInOut(duration: 0.28)) {
+                        if isCleanup {
+                            cleanups.removeAll { $0.id == action.id }
+                        } else {
+                            actions.removeAll { $0.id == action.id }
+                        }
+                    }
+                    onRemoveAction(envID, action.id, isCleanup)
+                }
+            }
+
+            if commandEditor?.action.id == action.id {
+                commandEditorView
+                    .padding(.top, 8)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+    }
+
+    private func cacheBase(isCleanup: Bool) -> String {
+        let base = isTemplate ? "template:\(trimmedName)" : trimmedName
+        return isCleanup ? Opener.cleanupCacheEnv(base) : base
+    }
+
+    private func toggleCommandEditor(_ action: ActionSpec, isCleanup: Bool) {
+        if commandEditor?.action.id == action.id {
+            commandEditor = nil
+            return
+        }
+        let commands = CommandCache.lookup(env: cacheBase(isCleanup: isCleanup), action: action)?.commands ?? []
+        withAnimation(.easeInOut(duration: 0.2)) {
+            commandEditor = CommandEditorState(
+                action: action, isCleanup: isCleanup, name: action.name, commands: commands
+            )
+        }
+    }
+
+    private var commandEditorView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Action name", text: Binding(
+                get: { commandEditor?.name ?? "" },
+                set: { commandEditor?.name = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            .frame(width: 200)
+
+            Text("Command steps (run in order with zsh)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            ForEach(0..<(commandEditor?.commands.count ?? 0), id: \.self) { index in
+                HStack(spacing: 6) {
+                    TextField("command", text: Binding(
+                        get: { commandEditor?.commands.indices.contains(index) == true ? commandEditor!.commands[index] : "" },
+                        set: { if commandEditor?.commands.indices.contains(index) == true { commandEditor?.commands[index] = $0 } }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.system(size: 11, design: .monospaced))
+                    Button {
+                        commandEditor?.commands.remove(at: index)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Button {
+                    commandEditor?.commands.append("")
+                } label: {
+                    Label("Add step", systemImage: "plus").font(.caption)
+                }
+                Spacer()
+                Button("Cancel") { commandEditor = nil }
+                    .controlSize(.small)
+                Button("Save") { saveCommandEditor() }
+                    .controlSize(.small)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.background.opacity(0.5)))
+    }
+
+    private func saveCommandEditor() {
+        guard let state = commandEditor, let envID else { return }
+        let newName = state.name.trimmingCharacters(in: .whitespaces)
+        guard !newName.isEmpty else { return }
+        let commands = state.commands
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        let cacheEnv = cacheBase(isCleanup: state.isCleanup)
+        if newName != state.action.name {
+            CommandCache.remove(env: cacheEnv, action: state.action.name)
+        }
+        let spec = ActionSpec(
+            id: state.action.id,
+            name: newName,
+            prompt: state.action.prompt,
+            chatID: state.action.chatID
+        )
+        if state.isCleanup {
+            if let i = cleanups.firstIndex(where: { $0.id == spec.id }) { cleanups[i] = spec }
+        } else {
+            if let i = actions.firstIndex(where: { $0.id == spec.id }) { actions[i] = spec }
+        }
+        onSaveAction(envID, spec, commands, state.action.id, state.isCleanup)
+        withAnimation(.easeInOut(duration: 0.2)) { commandEditor = nil }
     }
 
     private var chatPane: some View {
@@ -954,11 +1075,9 @@ struct NewEnvironmentView: View {
                 let replacing = editingAction
                 let isCleanup = designingCleanup
 
-                // Persist this session's conversation, linked from the action.
-                let chatID = replacing?.chatID ?? UUID()
-                ChatStore.append(chatID, messages: chat.newTranscript())
-
-                let spec = ActionSpec(name: proposal.name, prompt: proposal.intent, chatID: chatID)
+                // The conversation is already on disk (persisted per turn);
+                // just link the action to it.
+                let spec = ActionSpec(name: proposal.name, prompt: proposal.intent, chatID: chat.chatID)
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     if isCleanup {
                         if let replacing, let i = cleanups.firstIndex(where: { $0.id == replacing.id }) {
@@ -1015,8 +1134,8 @@ struct NewEnvironmentView: View {
         designingCleanup = isCleanup
         chat.reset()
 
-        if let chatID = action.chatID, let record = ChatStore.load(chatID) {
-            chat.preload(record.messages)
+        if let existing = action.chatID {
+            chat.adopt(chatID: existing)
         }
 
         let base = isTemplate ? "template:\(trimmedName)" : trimmedName

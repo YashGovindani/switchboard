@@ -21,14 +21,16 @@ final class ActionChatModel: ObservableObject {
     private var session = ClaudeStreamSession()
     private var instructionSent = false
     private var pendingContext: String?
-    private var preloadedCount = 0
+    /// The chat record this conversation persists into — every completed turn
+    /// is appended immediately, so a crash never loses the discussion.
+    private(set) var chatID = UUID()
 
     func reset() {
         session.close()
         session = ClaudeStreamSession()
         instructionSent = false
         pendingContext = nil
-        preloadedCount = 0
+        chatID = UUID()
         messages = []
         pending = false
         partial = ""
@@ -41,20 +43,14 @@ final class ActionChatModel: ObservableObject {
         pendingContext = context
     }
 
-    /// Shows a stored conversation (from the action's chat record) above the
-    /// new session's messages.
-    func preload(_ history: [SwitchboardCore.ChatMessage]) {
-        messages = history.map {
-            Message(role: $0.role == "user" ? .user : .assistant, text: $0.text)
-        }
-        preloadedCount = messages.count
-    }
-
-    /// The messages produced by this session (excludes preloaded history),
-    /// ready for the chat store.
-    func newTranscript() -> [SwitchboardCore.ChatMessage] {
-        messages.dropFirst(preloadedCount).map {
-            SwitchboardCore.ChatMessage(role: $0.role == .user ? "user" : "assistant", text: $0.text)
+    /// Continues an existing chat record: shows its stored history and makes
+    /// this session's turns append to the same file.
+    func adopt(chatID id: UUID) {
+        chatID = id
+        if let record = ChatStore.load(id) {
+            messages = record.messages.map {
+                Message(role: $0.role == "user" ? .user : .assistant, text: $0.text)
+            }
         }
     }
 
@@ -89,12 +85,22 @@ final class ActionChatModel: ObservableObject {
                     if let proposal { self.proposal = proposal }
                     self.partial = ""
                     self.pending = false
+                    // Persist the turn right away so mid-design work survives
+                    // an app crash.
+                    ChatStore.append(self.chatID, messages: [
+                        SwitchboardCore.ChatMessage(role: "user", text: trimmed),
+                        SwitchboardCore.ChatMessage(role: "assistant", text: reply),
+                    ])
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.messages.append(Message(role: .assistant, text: "Error: \(error)"))
                     self.partial = ""
                     self.pending = false
+                    ChatStore.append(self.chatID, messages: [
+                        SwitchboardCore.ChatMessage(role: "user", text: trimmed),
+                        SwitchboardCore.ChatMessage(role: "assistant", text: "Error: \(error)"),
+                    ])
                 }
             }
         }

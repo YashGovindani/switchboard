@@ -48,6 +48,13 @@ public enum CommandCache {
         try? save(cache)
     }
 
+    /// Drops a single action's cached entry (used when an action is renamed).
+    public static func remove(env: String, action: String) {
+        var cache = load()
+        cache[key(env: env, action: action)] = nil
+        try? save(cache)
+    }
+
     /// Duplicates one namespace's cached commands into another (both the
     /// plain and "#cleanup" variants) — used when saving or instantiating
     /// templates so no re-translation is needed.
