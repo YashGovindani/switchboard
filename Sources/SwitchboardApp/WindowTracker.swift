@@ -113,6 +113,43 @@ final class WindowTracker {
         return refs.filter { current[CGWindowID($0.windowID)] != nil }
     }
 
+    // MARK: Sweeping
+
+    /// Silently drops window records that no longer exist (e.g. after a
+    /// reboot) without treating it as a user-closed transition — so stale
+    /// state never triggers auto-cleanup.
+    func pruneAll() {
+        let current = currentWindows()
+        for env in EnvironmentStore.load() {
+            guard let windows = env.windows, !windows.isEmpty else { continue }
+            let live = windows.filter { current[CGWindowID($0.windowID)] != nil }
+            if live.count != windows.count {
+                EnvironmentStore.update(env.id) { $0.windows = live.isEmpty ? nil : live }
+            }
+        }
+    }
+
+    /// Environments whose tracked windows have all just disappeared (i.e.
+    /// the user closed them). Clears their window records and returns them
+    /// so the app can finish them. Partially-closed environments only get
+    /// their dead entries pruned.
+    func sweepClosed(skipping busy: Set<UUID>) -> [SwitchboardCore.Environment] {
+        let current = currentWindows()
+        var closed: [SwitchboardCore.Environment] = []
+        for env in EnvironmentStore.load() {
+            guard !busy.contains(env.id),
+                  let windows = env.windows, !windows.isEmpty else { continue }
+            let live = windows.filter { current[CGWindowID($0.windowID)] != nil }
+            if live.isEmpty {
+                EnvironmentStore.update(env.id) { $0.windows = nil }
+                closed.append(env)
+            } else if live.count != windows.count {
+                EnvironmentStore.update(env.id) { $0.windows = live }
+            }
+        }
+        return closed
+    }
+
     // MARK: Accessibility actions
 
     /// Prompts for the Accessibility permission if not yet granted.

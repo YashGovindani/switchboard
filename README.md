@@ -55,7 +55,7 @@ Switchboard runs in the background — no Dock icon, just a menu-bar icon.
 - **Edit** (✏️) an environment to manage its actions, or an action to revise it — the chat reopens pre-loaded with the action's current intent and commands. The header shows the environment you're editing (click the ✏️ beside it to **rename**), with **Add action** beside it.
 - **Templates** — the ⧉ button in the builder header saves the environment's actions + cleanup as a template (saving again overwrites it). The new-environment screen then offers **"start from a template"**: pick one and the environment is pre-filled — cached commands included, so nothing is re-translated. Clicking a template with the name field empty names the environment after the template.
 - **Cleanup actions** — each environment has a second list, designed in the same chat via **Add cleanup**: teardown steps (stop servers, remove worktrees, …) for when the task is done.
-- **Finish task** (⏹ on an environment row, or `switchboard finish <env>`): runs the cleanup actions, closes the environment's tracked windows, and clears its tracking. The environment definition stays for next time.
+- **Finish task** (⏹ on an environment row, or `switchboard finish <env>`): runs the cleanup actions, closes the environment's tracked windows, and clears its tracking. The environment definition stays for next time. Closing all of an environment's windows yourself does the same automatically — Switchboard notices within seconds and runs its cleanup (reboots don't count; only closures it observes live).
 - **Copy** (⧉) an action's description, **delete** (🗑) an environment or action with an inline confirm: first click shows "Sure?", second click deletes.
 - **Escape** (or clicking elsewhere) dismisses the panel.
 - Menu-bar menu: show the panel, open the config file, quit.
@@ -100,7 +100,7 @@ Configs from older versions (single `config.json` + `state.json`) migrate automa
 ## Features
 
 - **⌥Space, anywhere** — a global hotkey summons a Spotlight-style floating panel, even over fullscreen apps.
-- **Real switching, not relaunching** — each environment's windows are tracked by their window-server IDs (persisted in `~/.config/switchboard/state.json`); reopening focuses what's already there, switching minimizes what you left, and every action is generated to open a fresh window so environments never share them.
+- **Real switching, not relaunching** — each environment's windows are tracked by their window-server IDs (stored on the environment's record in `environments.json`); reopening focuses what's already there, switching minimizes what you left, and every action is generated to open a fresh window so environments never share them. Close all of an environment's windows and it finishes itself.
 - **Fullscreen-first** — newly opened environment windows are pushed into native fullscreen, one Space per window, so switching environments is a clean jump between Spaces.
 - **Chat-designed actions** — actions are agreed in a conversation with your local Claude, not typed as config. The panel expands into a split view (environment on the left, chat on the right), replies stream in live, and each conversation runs on a persistent `claude` stream-json session — later turns are fast and cheap, and no transcript is resent.
 - **Approve before it ever runs** — Claude proposes concrete numbered steps; nothing becomes an action until you click Create. The approved commands go straight into the cache.

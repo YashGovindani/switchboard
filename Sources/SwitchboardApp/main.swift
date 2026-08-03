@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var panel: OverlayPanel?
     private var activeEnv: UUID?
+    private var busyEnvs: Set<UUID> = []
+    private var sweepTimer: Timer?
     private var showMenuItem: NSMenuItem?
     private var loginMenuItem: NSMenuItem?
     private var recorderWindow: NSWindow?
@@ -41,6 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
 
         applyHotKey(SettingsStore.load().hotkey ?? .optionSpace)
+
+        // Drop stale window records from before this launch (a reboot must
+        // never look like the user closing windows), then watch for
+        // environments whose windows the user closes — those get finished.
+        DispatchQueue.global(qos: .utility).async {
+            WindowTracker.shared.pruneAll()
+        }
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.sweepForClosedEnvironments()
+        }
 
         NotificationCenter.default.addObserver(
             forName: .switchboardPanelResize, object: nil, queue: .main
@@ -94,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openEnvironment(_ env: SwitchboardCore.Environment) {
         let previous = activeEnv
         activeEnv = env.id
+        busyEnvs.insert(env.id)
         opening += 1
 
         // First switch triggers the one-time Accessibility prompt; without
@@ -111,7 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if tracker.focus(env.id) {
                 // Already open — focused its windows instead of re-running.
-                DispatchQueue.main.async { self?.opening -= 1 }
+                DispatchQueue.main.async {
+                    self?.opening -= 1
+                    self?.busyEnvs.remove(env.id)
+                }
                 return
             }
 
@@ -127,8 +143,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             DispatchQueue.main.async {
                 self?.opening -= 1
+                self?.busyEnvs.remove(env.id)
                 if !ok {
                     self?.showError("Some actions of '\(env.name)' failed. See Console logs or run `switchboard open \(env.name)` in a terminal for details.")
+                }
+            }
+        }
+    }
+
+    /// Detects environments whose windows the user closed manually and
+    /// finishes them: their cleanup actions run and their state clears.
+    private func sweepForClosedEnvironments() {
+        let busy = busyEnvs
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let closed = WindowTracker.shared.sweepClosed(skipping: busy)
+            guard !closed.isEmpty else { return }
+            DispatchQueue.main.async {
+                for env in closed {
+                    NSLog("switchboard: all windows of '%@' closed — finishing task", env.name)
+                    if self?.activeEnv == env.id { self?.activeEnv = nil }
+                    guard let cleanup = env.cleanup, !cleanup.isEmpty else { continue }
+                    self?.opening += 1
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let ok = Opener.finish(env) { NSLog("switchboard: %@", $0) }
+                        DispatchQueue.main.async {
+                            self?.opening -= 1
+                            if !ok {
+                                self?.showError("Auto-cleanup of '\(env.name)' had failures. Run `switchboard finish \(env.name)` for details.")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -137,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "Finish task": run the environment's cleanup actions, then close its
     /// tracked windows and forget them.
     private func finishEnvironment(_ env: SwitchboardCore.Environment) {
+        busyEnvs.insert(env.id)
         opening += 1
         WindowTracker.ensureAccessibility()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -144,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             WindowTracker.shared.closeWindows(of: env.id)
             DispatchQueue.main.async {
                 if self?.activeEnv == env.id { self?.activeEnv = nil }
+                self?.busyEnvs.remove(env.id)
                 self?.opening -= 1
                 if !ok {
                     self?.showError("Some cleanup actions of '\(env.name)' failed. Run `switchboard finish \(env.name)` in a terminal for details.")
